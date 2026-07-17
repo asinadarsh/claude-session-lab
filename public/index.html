@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A localhost-only Claude subscription authentication and inference lab.">
+  <meta name="color-scheme" content="dark">
+  <title>Claude Session Lab</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <div class="grid-field" aria-hidden="true"></div>
+
+  <header class="site-header shell">
+    <a class="brand" href="/" aria-label="Claude Session Lab home">
+      <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true">
+        <rect x="4" y="4" width="32" height="32" rx="10"></rect>
+        <path d="M13 22.5c0-5.2 2.8-9.5 7-9.5 3.8 0 7 3.2 7 7s-3.2 7-7 7c-2.8 0-5-1.8-5-4.2 0-2.2 1.8-3.8 4-3.8 1.8 0 3 1.2 3 2.8"></path>
+      </svg>
+      <span>
+        <strong>Claude Session Lab</strong>
+        <small>Private connection workspace</small>
+      </span>
+    </a>
+    <div class="header-status">
+      <span class="badge badge-test">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5 16 5v4.2c0 4-2.4 6.7-6 8.3-3.6-1.6-6-4.3-6-8.3V5l6-2.5Z"></path><path d="m7.5 10 1.7 1.7 3.6-4"></path></svg>
+        Test account only
+      </span>
+      <span class="status-pill" id="global-status" data-state="checking">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="global-status-text">Checking session</span>
+      </span>
+    </div>
+  </header>
+
+  <main id="main-content" class="shell page-main">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="hero-copy">
+        <p class="eyebrow"><span>LOCAL / 01</span> Subscription authentication lab</p>
+        <h1 id="page-title">A private lane to your <span>test Claude session.</span></h1>
+        <p class="hero-lede">Authorize a separate test subscription, keep credentials on the host, and prove inference through an isolated Claude Code process without crossing into your existing Claude Code profile.</p>
+      </div>
+      <div class="security-rail" aria-label="Security properties">
+        <div class="rail-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="16" height="13" rx="3"></rect><path d="M8 7V5a4 4 0 0 1 8 0v2M12 12v3"></path></svg>
+          <span><strong>Loopback bound</strong><small>127.0.0.1 only</small></span>
+        </div>
+        <div class="rail-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 7v5c0 5-3.2 8.2-8 10-4.8-1.8-8-5-8-10V7l8-4Z"></path><path d="m9 12 2 2 4-5"></path></svg>
+          <span><strong>Server-side tokens</strong><small>Never returned to JavaScript</small></span>
+        </div>
+        <div class="rail-item">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 9 4 12l4 3M16 9l4 3-4 3M14 5l-4 14"></path></svg>
+          <span><strong>Isolated runtime</strong><small>Ephemeral tmpfs config</small></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="workspace" aria-label="Authentication and prompt workspace">
+      <article class="glass-panel auth-panel" aria-labelledby="connection-title">
+        <header class="panel-header">
+          <div>
+            <p class="section-index">01 / CONNECTION</p>
+            <h2 id="connection-title">Secure handshake</h2>
+            <p>Use a separate test subscription. This flow never reads or overwrites your normal Claude Code profile.</p>
+          </div>
+          <span class="panel-state" id="panel-state">Not connected</span>
+        </header>
+
+        <ol class="auth-timeline" id="auth-timeline" aria-label="Connection progress">
+          <li data-step="prepare" class="is-current">
+            <span class="step-number">01</span>
+            <span><strong>Prepare</strong><small>Create PKCE pair</small></span>
+          </li>
+          <li data-step="authorize">
+            <span class="step-number">02</span>
+            <span><strong>Authorize</strong><small>Use test account</small></span>
+          </li>
+          <li data-step="exchange">
+            <span class="step-number">03</span>
+            <span><strong>Exchange</strong><small>Server-side only</small></span>
+          </li>
+          <li data-step="connected">
+            <span class="step-number">04</span>
+            <span><strong>Connected</strong><small>Ready to prompt</small></span>
+          </li>
+        </ol>
+
+        <div id="prepare-view" class="connection-view">
+          <div class="notice notice-violet">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 21 19H3L12 3Z"></path><path d="M12 9v4M12 16.5v.1"></path></svg>
+            <div><strong>Confirm the account before approving.</strong><p>Sign out of any personal Claude browser session first if needed, then authenticate only with the disposable test subscription.</p></div>
+          </div>
+          <button class="button button-primary" id="start-auth" type="button">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h12M11 5l5 5-5 5"></path></svg>
+            <span>Prepare secure sign-in</span>
+          </button>
+          <p class="microcopy">Generates a one-time verifier and state. The attempt expires after 10 minutes.</p>
+        </div>
+
+        <div id="authorize-view" class="connection-view" hidden>
+          <div class="authorize-header">
+            <div>
+              <p class="view-kicker">Authorization prepared</p>
+              <h3>Approve in Claude, then paste the code.</h3>
+            </div>
+            <span class="countdown" id="auth-countdown">10:00</span>
+          </div>
+          <a class="button button-primary button-link" id="authorization-link" href="#" target="_blank" rel="noopener noreferrer">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11 3h6v6M17 3l-8 8"></path><path d="M15 11v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"></path></svg>
+            <span>Open Claude authorization</span>
+          </a>
+          <button class="button button-secondary" id="restart-auth" type="button" hidden>Prepare a new link</button>
+
+          <form id="code-form" class="code-form" novalidate>
+            <div class="field-header">
+              <label for="authorization-code">Authorization code</label>
+              <span>One-time value</span>
+            </div>
+            <textarea id="authorization-code" name="authorizationCode" rows="3" autocomplete="off" autocapitalize="none" spellcheck="false" required aria-describedby="code-help code-error" placeholder="Paste the code shown after approval"></textarea>
+            <p class="field-help" id="code-help">Accepted once, exchanged over TLS, then cleared from this field.</p>
+            <p class="field-error" id="code-error" role="alert"></p>
+            <button class="button button-primary" id="complete-auth" type="submit">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m4 10 4 4 8-8"></path></svg>
+              <span>Exchange and connect</span>
+            </button>
+          </form>
+        </div>
+
+        <div id="connected-view" class="connection-view" hidden>
+          <div class="connected-card">
+            <div class="connected-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"></path></svg>
+            </div>
+            <div class="connected-copy">
+              <p class="view-kicker">Encrypted transport / ephemeral custody</p>
+              <h3>Test subscription connected</h3>
+              <dl class="account-grid">
+                <div><dt>Account</dt><dd id="account-email">Verified</dd></div>
+                <div><dt>Plan</dt><dd id="account-plan">Detected</dd></div>
+                <div><dt>Access expiry</dt><dd id="access-expiry">?</dd></div>
+                <div><dt>Storage</dt><dd>Server memory</dd></div>
+              </dl>
+            </div>
+          </div>
+          <button class="button button-danger" id="open-disconnect" type="button">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 4H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3M13 6l4 4-4 4M17 10H7"></path></svg>
+            <span>Disconnect and revoke</span>
+          </button>
+        </div>
+      </article>
+
+      <article class="glass-panel playground-panel" aria-labelledby="playground-title">
+        <header class="panel-header">
+          <div>
+            <p class="section-index">02 / INFERENCE</p>
+            <h2 id="playground-title">Prompt playground</h2>
+            <p>One prompt, one isolated process, zero tools. Output returns only after the test session is connected.</p>
+          </div>
+          <span class="panel-state" id="inference-state">Locked</span>
+        </header>
+
+        <div class="locked-callout" id="locked-callout">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="3"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>
+          <div><strong>Connection required</strong><p>Complete the secure handshake to unlock subscription-backed inference.</p></div>
+        </div>
+
+        <form id="prompt-form" class="prompt-form" novalidate>
+          <div class="field-header">
+            <label for="prompt">Prompt</label>
+            <span id="prompt-count">0 / 12,000</span>
+          </div>
+          <textarea id="prompt" rows="7" maxlength="12000" disabled required aria-describedby="prompt-help prompt-error" placeholder="Ask the test Claude session something concise..."></textarea>
+          <div class="prompt-presets" aria-label="Prompt examples">
+            <button type="button" data-prompt="Reply with a one-sentence confirmation that this request reached the isolated test session." disabled>Connection proof</button>
+            <button type="button" data-prompt="Explain PKCE in three concise bullet points for a software engineer." disabled>Explain PKCE</button>
+            <button type="button" data-prompt="Write a small JavaScript function that safely truncates text without splitting surrogate pairs." disabled>Code sample</button>
+          </div>
+          <p class="field-help" id="prompt-help">Prompts are sent through Claude Code with all tools disabled and no session persistence.</p>
+          <p class="field-error" id="prompt-error" role="alert"></p>
+          <button class="button button-primary" id="send-prompt" type="submit" disabled>
+            <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m3 3 14 7-14 7 3-7-3-7Z"></path><path d="M6 10h8"></path></svg>
+            <span>Run isolated inference</span>
+          </button>
+        </form>
+
+        <section class="response-card" id="response-card" aria-labelledby="response-title" hidden>
+          <div class="response-header">
+            <div><span class="response-dot" aria-hidden="true"></span><h3 id="response-title">Claude response</h3></div>
+            <span id="response-meta">Completed</span>
+          </div>
+          <pre id="response-output" tabindex="0"></pre>
+        </section>
+      </article>
+    </section>
+
+    <section class="trust-ledger" aria-labelledby="ledger-title">
+      <div>
+        <p class="section-index">03 / TRUST LEDGER</p>
+        <h2 id="ledger-title">Nothing crosses the account boundary.</h2>
+      </div>
+      <ul>
+        <li><span>01</span><div><strong>Existing account untouched</strong><p>Your normal Claude Code profile stays outside the app boundary; this app never reads its token values.</p></div></li>
+        <li><span>02</span><div><strong>Browser receives no credentials</strong><p>JavaScript sees connection metadata, a CSRF token, and model output?never access or refresh tokens.</p></div></li>
+        <li><span>03</span><div><strong>Ephemeral execution</strong><p>Each prompt gets a fresh mode-700 tmpfs home. Credentials are mode 600 and deleted immediately after exit.</p></div></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="site-footer shell">
+    <span>Claude Session Lab / localhost validation build</span>
+    <span>Private OAuth research environment</span>
+  </footer>
+
+  <dialog id="disconnect-dialog" aria-labelledby="disconnect-title" aria-describedby="disconnect-description">
+    <form method="dialog" class="dialog-card">
+      <div class="dialog-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 21 19H3L12 3Z"></path><path d="M12 9v4M12 16.5v.1"></path></svg></div>
+      <h2 id="disconnect-title">Disconnect this test session?</h2>
+      <p id="disconnect-description">The in-memory credential will be deleted and the refresh token will be revoked when the upstream service accepts the request.</p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" id="cancel-disconnect" value="cancel">Keep connected</button>
+        <button class="button button-danger" id="confirm-disconnect" value="default">Disconnect</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+</body>
+</html>

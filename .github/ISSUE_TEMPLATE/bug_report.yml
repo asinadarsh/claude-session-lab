@@ -1,0 +1,80 @@
+name: Bug report
+description: Report a reproducible problem without including private data
+title: "bug: "
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Never include authorization codes, tokens, account identifiers, hostnames, IP addresses, or unredacted logs.
+
+  - type: input
+    id: version
+    attributes:
+      label: Claude Session Lab version
+      description: Commit SHA or release tag.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Code version
+      placeholder: 2.1.207
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Affected stage
+      options:
+        - Startup
+        - Prepare
+        - Authorize
+        - Exchange
+        - Inference
+        - Disconnect
+        - Tests or CI
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Use placeholders for every sensitive value.
+      placeholder: |
+        1. Start the server...
+        2. Open the tunnel...
+        3. Select...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include only sanitized error codes and messages.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Privacy checklist
+      options:
+        - label: I removed authorization codes, tokens, cookies, account data, host details, and prompt content.
+          required: true
+        - label: This is not a vulnerability report that should use the private security process.
+          required: true
+        - label: I reproduced this with an account and host I am authorized to test.
+          required: true

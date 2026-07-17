@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose a focused improvement with security impact considered
+title: "feature: "
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or research need
+      description: What concrete limitation are you trying to address?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe behavior and scope, not private account details.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: true
+
+  - type: dropdown
+    id: security
+    attributes:
+      label: Does this change a security boundary?
+      options:
+        - No
+        - Yes - network boundary
+        - Yes - browser or session boundary
+        - Yes - credential lifecycle
+        - Yes - Claude subprocess isolation
+        - Unsure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Invariants
+      options:
+        - label: The proposal keeps credentials out of browser responses and logs.
+          required: true
+        - label: The proposal preserves localhost-only operation unless accompanied by a new threat model.
+          required: true

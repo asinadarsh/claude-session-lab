@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/asinadarsh/claude-session-lab/security/advisories/new
+    about: Report vulnerabilities privately. Do not include secrets in a public issue.
+  - name: Security policy
+    url: https://github.com/asinadarsh/claude-session-lab/blob/main/SECURITY.md
+    about: Read the disclosure process and scope before reporting.

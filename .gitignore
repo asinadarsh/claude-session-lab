@@ -1,0 +1,29 @@
+# Runtime and credential state
+data/
+logs/
+isolated-claude-config/
+oauth-probe/
+*.log
+*.pid
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Keys and certificates
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Dependencies and reports
+node_modules/
+coverage/
+.nyc_output/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

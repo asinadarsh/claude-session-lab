@@ -1,0 +1,34 @@
+{
+  "name": "claude-session-lab",
+  "version": "0.1.0",
+  "description": "A localhost-only security lab for isolated Claude subscription OAuth and inference.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "asinadarsh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/asinadarsh/claude-session-lab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/asinadarsh/claude-session-lab/issues"
+  },
+  "homepage": "https://github.com/asinadarsh/claude-session-lab#readme",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "oauth",
+    "pkce",
+    "security",
+    "self-hosted",
+    "nodejs"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "check": "node --check src/server.mjs && node --check public/app.js",
+    "test": "node --test"
+  }
+}
