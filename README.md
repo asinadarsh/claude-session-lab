@@ -92,7 +92,46 @@ curl http://127.0.0.1:3210/v1/messages \
 That's it. Point your app at `http://127.0.0.1:3210` with that key.
 
 > [!TIP]
-> Save the master key somewhere safe. It encrypts the stored token, and there is no recovery if you lose it — you would just re-link. Put both it and `SESSION_LAB_GATEWAY=1` in your shell profile so the server picks them up every time.
+> Save the master key somewhere safe. It encrypts the stored token, and there is no recovery if you lose it — you would just re-link. Note that `export` only lasts for that terminal: put the master key and `SESSION_LAB_GATEWAY=1` in your shell profile, or in the service file below, or the next `npm start` comes up with the gateway disabled.
+
+## Keep it running
+
+`npm start` dies when you close the terminal. For everyday personal use, a user-level systemd
+service is the least fuss — no root, and it comes back after a crash or reboot:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/claude-session-lab.service <<'EOF'
+[Unit]
+Description=Claude Session Lab gateway
+
+[Service]
+WorkingDirectory=%h/claude-session-lab
+Environment=SESSION_LAB_GATEWAY=1
+Environment=SESSION_LAB_MASTER_KEY=paste-your-master-key-here
+Environment=CLAUDE_BINARY=%h/.local/bin/claude
+ExecStart=/usr/bin/env node src/server.mjs
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+
+chmod 600 ~/.config/systemd/user/claude-session-lab.service   # it holds your master key
+systemctl --user daemon-reload
+systemctl --user enable --now claude-session-lab
+loginctl enable-linger "$USER"        # keep it running after you log out
+
+systemctl --user status claude-session-lab
+journalctl --user -u claude-session-lab -f
+```
+
+Only one process may hold the keystore at a time, so stop the service before running
+`link-local` again — or just use the browser UI, which works while it runs.
+
+For a public, multi-app deployment behind a domain, use the hardened root-level unit in
+**[docs/DEPLOY.md](docs/DEPLOY.md)** instead: dedicated service user, filesystem protections, and
+a reverse proxy that exposes only `/v1/*`.
 
 ## Use it from your app
 
