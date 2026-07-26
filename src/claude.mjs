@@ -7,6 +7,11 @@ import { PublicError } from './security.mjs';
 
 const ONE_MIB = 1024 * 1024;
 
+// Sent when the caller supplies no system prompt. Passing --system-prompt replaces the
+// Claude Code agent preamble, which keeps API behaviour close to the Messages API and
+// avoids billing the caller for a coding-agent system prompt they never asked for.
+export const DEFAULT_SYSTEM_PROMPT = 'You are Claude, a helpful AI assistant. Answer the user directly.';
+
 export function buildCredentialPayload(tokens) {
   const oauth = {
     accessToken: tokens.accessToken,
@@ -18,6 +23,13 @@ export function buildCredentialPayload(tokens) {
   if (tokens.subscriptionType) oauth.subscriptionType = tokens.subscriptionType;
   if (tokens.rateLimitTier) oauth.rateLimitTier = tokens.rateLimitTier;
   return { claudeAiOauth: oauth };
+}
+
+export function buildUserLine(text) {
+  return JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  });
 }
 
 async function temporaryBase() {
@@ -64,18 +76,45 @@ function capture(stream, limit, onOverflow) {
   };
 }
 
-function parseCliResult(stdout) {
-  const trimmed = stdout.trim();
-  if (!trimmed) throw new Error('Claude returned no JSON output');
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    const lines = trimmed.split(/\r?\n/).reverse();
-    for (const line of lines) {
-      try { return JSON.parse(line); } catch {}
+// stdout is JSONL; deliver one parsed object per line and drop anything unparseable
+// rather than failing the whole run on a stray log line.
+function lineReader(stream, limit, onLine, onOverflow) {
+  let buffer = '';
+  let size = 0;
+  let overflow = false;
+  stream.setEncoding('utf8');
+  stream.on('data', (chunk) => {
+    size += chunk.length;
+    if (size > limit) {
+      if (!overflow) {
+        overflow = true;
+        onOverflow();
+      }
+      return;
     }
-    throw new Error('Claude returned malformed JSON output');
-  }
+    buffer += chunk;
+    let index = buffer.indexOf('\n');
+    while (index >= 0) {
+      const line = buffer.slice(0, index).trim();
+      buffer = buffer.slice(index + 1);
+      if (line) {
+        try {
+          onLine(JSON.parse(line));
+        } catch {}
+      }
+      index = buffer.indexOf('\n');
+    }
+    if (buffer.length > ONE_MIB) buffer = '';
+  });
+  stream.on('end', () => {
+    const line = buffer.trim();
+    buffer = '';
+    if (!line) return;
+    try {
+      onLine(JSON.parse(line));
+    } catch {}
+  });
+  return { get overflow() { return overflow; } };
 }
 
 async function readUpdatedTokens(path, original) {
@@ -105,24 +144,41 @@ async function readUpdatedTokens(path, original) {
   }
 }
 
-function publicCliError(result) {
+export function publicCliError(result) {
   const message = String(result?.result ?? '').toLowerCase();
   if (message.includes('not logged in') || message.includes('unauthorized') || result?.api_error_status === 401) {
-    return new PublicError(401, 'CLAUDE_AUTH_REQUIRED', 'The test Claude session needs to be connected again.');
+    return new PublicError(401, 'CLAUDE_AUTH_REQUIRED', 'The linked Claude account needs to be connected again.');
   }
-  if (message.includes('rate limit') || result?.api_error_status === 429) {
-    return new PublicError(429, 'CLAUDE_RATE_LIMITED', 'The test subscription is temporarily rate-limited. Try again later.');
+  if (message.includes('rate limit') || message.includes('usage limit') || result?.api_error_status === 429) {
+    return new PublicError(429, 'CLAUDE_RATE_LIMITED', 'The linked Claude subscription is rate-limited. Try again later.');
   }
-  return new PublicError(502, 'CLAUDE_INFERENCE_FAILED', 'Claude could not complete this prompt. Retry once, then reconnect if it continues.');
+  if (result?.api_error_status === 400 || message.includes('too long') || message.includes('exceed')) {
+    return new PublicError(400, 'CLAUDE_REQUEST_REJECTED', 'Claude rejected this request. Shorten the conversation and retry.');
+  }
+  return new PublicError(502, 'CLAUDE_INFERENCE_FAILED', 'Claude could not complete this request. Retry once, then reconnect if it continues.');
 }
 
-export async function runClaudePrompt({
+/**
+ * Runs one sandboxed `claude` turn and streams every stdout JSONL object to onEvent.
+ * The sandbox (temporary HOME, CLAUDE_CONFIG_DIR and credentials file) is destroyed
+ * before this resolves, whatever the outcome.
+ */
+export async function runClaudeStream({
   tokens,
-  prompt,
+  cliInputLine,
+  model = 'sonnet',
+  systemPrompt = null,
+  maxTokens = null,
   binary,
   timeoutMs = 120000,
   maxOutputBytes = 2 * ONE_MIB,
+  onEvent = () => {},
+  signal = null,
 }) {
+  if (typeof cliInputLine !== 'string' || !cliInputLine || cliInputLine.includes('\n')) {
+    throw new PublicError(500, 'CLI_INPUT_INVALID', 'The request could not be prepared for the inference sandbox.');
+  }
+
   const base = await temporaryBase();
   const root = await mkdtemp(join(base, 'run-'));
   const home = join(root, 'home');
@@ -152,21 +208,36 @@ export async function runClaudePrompt({
     CLAUDE_CONFIG_DIR: config,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DISABLE_TELEMETRY: '1',
+    DISABLE_AUTOUPDATER: '1',
     NO_COLOR: '1',
     TERM: 'dumb',
   };
+  if (Number.isInteger(maxTokens) && maxTokens > 0) {
+    env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
+  }
+
+  const args = [
+    '-p',
+    '--input-format', 'stream-json',
+    '--output-format', 'stream-json',
+    '--include-partial-messages',
+    '--verbose',
+    '--no-session-persistence',
+    '--setting-sources', '',
+    '--strict-mcp-config',
+    '--tools', '',
+    '--model', model,
+    '--system-prompt', systemPrompt || DEFAULT_SYSTEM_PROMPT,
+  ];
 
   let child;
   let timedOut = false;
+  let aborted = false;
   let outputOverflow = false;
   let hardKillTimer;
+  let onAbort;
   try {
-    child = spawn(binary, [
-      '-p',
-      '--output-format', 'json',
-      '--no-session-persistence',
-      '--tools', '',
-    ], {
+    child = spawn(binary, args, {
       cwd: work,
       env,
       shell: false,
@@ -178,7 +249,11 @@ export async function runClaudePrompt({
       outputOverflow = true;
       terminateProcessGroup(child, 'SIGTERM');
     };
-    const stdout = capture(child.stdout, maxOutputBytes, stopForOverflow);
+    const stdout = lineReader(child.stdout, maxOutputBytes, (obj) => {
+      try {
+        onEvent(obj);
+      } catch {}
+    }, stopForOverflow);
     const stderr = capture(child.stderr, 256 * 1024, stopForOverflow);
 
     const timer = setTimeout(() => {
@@ -189,53 +264,100 @@ export async function runClaudePrompt({
     }, timeoutMs);
     timer.unref?.();
 
+    if (signal) {
+      if (signal.aborted) {
+        aborted = true;
+        terminateProcessGroup(child, 'SIGTERM');
+      } else {
+        onAbort = () => {
+          aborted = true;
+          terminateProcessGroup(child, 'SIGTERM');
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    }
+
     child.stdin.on('error', () => {});
-    child.stdin.end(prompt, 'utf8');
+    child.stdin.end(`${cliInputLine}\n`, 'utf8');
 
     const outcome = await new Promise((resolve, reject) => {
       child.once('error', reject);
-      child.once('close', (code, signal) => resolve({ code, signal }));
+      child.once('close', (code, signalName) => resolve({ code, signal: signalName }));
     });
     clearTimeout(timer);
     clearTimeout(hardKillTimer);
 
     const updatedTokens = await readUpdatedTokens(credentialsPath, tokens);
-    if (timedOut) throw new PublicError(504, 'CLAUDE_TIMEOUT', 'Claude took too long to respond. Try a shorter prompt.');
+    if (aborted) return { updatedTokens, aborted: true, exitCode: outcome.code };
+    if (timedOut) throw new PublicError(504, 'CLAUDE_TIMEOUT', 'Claude took too long to respond. Try a shorter request.');
     if (outputOverflow || stdout.overflow || stderr.overflow) {
-      throw new PublicError(502, 'CLAUDE_OUTPUT_LIMIT', 'Claude produced more output than this demo can safely display.');
+      throw new PublicError(502, 'CLAUDE_OUTPUT_LIMIT', 'Claude produced more output than this gateway allows.');
     }
     if (outcome.code !== 0) {
       throw new PublicError(502, 'CLAUDE_PROCESS_FAILED', 'The isolated Claude process exited unexpectedly. Retry once.');
     }
-
-    let result;
-    try {
-      result = parseCliResult(stdout.text());
-    } catch {
-      throw new PublicError(502, 'CLAUDE_RESPONSE_INVALID', 'Claude returned an unreadable response. Retry once.');
+    return { updatedTokens, aborted: false, exitCode: outcome.code };
+  } catch (error) {
+    if (error instanceof PublicError) throw error;
+    if (error?.code === 'ENOENT') {
+      throw new PublicError(500, 'CLAUDE_BINARY_MISSING', 'The claude CLI could not be started. Check CLAUDE_BINARY.');
     }
-    if (result?.is_error || result?.subtype !== 'success') throw publicCliError(result);
-
-    const model = result.modelUsage && typeof result.modelUsage === 'object'
-      ? Object.keys(result.modelUsage)[0] ?? null
-      : null;
-    const usage = result.usage && typeof result.usage === 'object' ? result.usage : {};
-
-    return {
-      response: {
-        text: typeof result.result === 'string' ? result.result : '',
-        model,
-        durationMs: Number.isFinite(result.duration_ms) ? result.duration_ms : null,
-        inputTokens: Number.isFinite(usage.input_tokens) ? usage.input_tokens : null,
-        outputTokens: Number.isFinite(usage.output_tokens) ? usage.output_tokens : null,
-      },
-      updatedTokens,
-    };
+    throw new PublicError(502, 'CLAUDE_PROCESS_FAILED', 'The isolated Claude process could not be started. Retry once.');
   } finally {
-    if (child && child.exitCode === null) {
-      terminateProcessGroup(child, 'SIGKILL');
-    }
+    if (onAbort && signal) signal.removeEventListener('abort', onAbort);
+    if (child && child.exitCode === null) terminateProcessGroup(child, 'SIGKILL');
     clearTimeout(hardKillTimer);
     await rm(root, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** One-shot text prompt used by the browser demo. */
+export async function runClaudePrompt({
+  tokens,
+  prompt,
+  binary,
+  model = 'sonnet',
+  systemPrompt = null,
+  timeoutMs = 120000,
+  maxOutputBytes = 2 * ONE_MIB,
+}) {
+  let assistantMessage = null;
+  let result = null;
+  const { updatedTokens } = await runClaudeStream({
+    tokens,
+    cliInputLine: buildUserLine(prompt),
+    model,
+    systemPrompt,
+    binary,
+    timeoutMs,
+    maxOutputBytes,
+    onEvent: (obj) => {
+      if (obj?.type === 'assistant' && obj.message) assistantMessage = obj.message;
+      else if (obj?.type === 'result') result = obj;
+    },
+  });
+
+  if (!result) throw new PublicError(502, 'CLAUDE_RESPONSE_INVALID', 'Claude returned an unreadable response. Retry once.');
+  if (result.is_error || result.subtype !== 'success') throw publicCliError(result);
+
+  const blocks = Array.isArray(assistantMessage?.content) ? assistantMessage.content : [];
+  const text = blocks
+    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('')
+    || (typeof result.result === 'string' ? result.result : '');
+  const usage = result.usage && typeof result.usage === 'object' ? result.usage : {};
+
+  return {
+    response: {
+      text,
+      model: typeof assistantMessage?.model === 'string'
+        ? assistantMessage.model
+        : (result.modelUsage && typeof result.modelUsage === 'object' ? Object.keys(result.modelUsage)[0] ?? null : null),
+      durationMs: Number.isFinite(result.duration_ms) ? result.duration_ms : null,
+      inputTokens: Number.isFinite(usage.input_tokens) ? usage.input_tokens : null,
+      outputTokens: Number.isFinite(usage.output_tokens) ? usage.output_tokens : null,
+    },
+    updatedTokens,
+  };
 }

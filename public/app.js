@@ -30,6 +30,19 @@ const elements = {
   responseCard: document.querySelector('#response-card'),
   responseOutput: document.querySelector('#response-output'),
   responseMeta: document.querySelector('#response-meta'),
+  gatewayState: document.querySelector('#gateway-state'),
+  gatewayDisabledCallout: document.querySelector('#gateway-disabled-callout'),
+  gatewayBody: document.querySelector('#gateway-body'),
+  keyForm: document.querySelector('#key-form'),
+  keyLabel: document.querySelector('#key-label'),
+  keyError: document.querySelector('#key-error'),
+  issueKey: document.querySelector('#issue-key'),
+  keyReveal: document.querySelector('#key-reveal'),
+  keyValue: document.querySelector('#key-value'),
+  keyUsage: document.querySelector('#key-usage'),
+  copyKey: document.querySelector('#copy-key'),
+  keyItems: document.querySelector('#key-items'),
+  keyEmpty: document.querySelector('#key-empty'),
   openDisconnect: document.querySelector('#open-disconnect'),
   disconnectDialog: document.querySelector('#disconnect-dialog'),
   cancelDisconnect: document.querySelector('#cancel-disconnect'),
@@ -139,6 +152,96 @@ function startCountdown(expiresAt) {
   app.countdownTimer = setInterval(update, 1000);
 }
 
+function usageSnippet(apiKey) {
+  return [
+    `curl ${window.location.origin}/v1/messages \\`,
+    `  -H "x-api-key: ${apiKey}" \\`,
+    '  -H "content-type: application/json" \\',
+    '  -d \'{"model":"claude-sonnet-5","max_tokens":256,',
+    '       "messages":[{"role":"user","content":"Hello"}]}\'',
+  ].join('\n');
+}
+
+function renderConnections(gateway) {
+  const connections = Array.isArray(gateway?.connections) ? gateway.connections : [];
+  elements.keyItems.replaceChildren();
+  elements.keyEmpty.hidden = connections.length > 0;
+
+  for (const connection of connections) {
+    const item = document.createElement('li');
+    const heading = document.createElement('div');
+    heading.className = 'key-item-head';
+
+    const label = document.createElement('strong');
+    label.textContent = connection.label;
+    const prefix = document.createElement('code');
+    prefix.textContent = `${connection.keyPrefix}...`;
+    heading.append(label, prefix);
+
+    if (connection.revokedAt) {
+      const tag = document.createElement('span');
+      tag.className = 'key-tag';
+      tag.textContent = 'Revoked';
+      heading.append(tag);
+    }
+
+    const meta = document.createElement('p');
+    meta.className = 'field-help';
+    meta.textContent = [
+      connection.account?.emailMasked || 'linked account',
+      connection.account?.plan ? `plan ${connection.account.plan}` : null,
+      `${connection.requestCount} requests`,
+      connection.lastUsedAt ? `last used ${formatExpiry(connection.lastUsedAt)}` : 'never used',
+    ].filter(Boolean).join(' / ');
+
+    item.append(heading, meta);
+
+    if (!connection.revokedAt) {
+      const revoke = document.createElement('button');
+      revoke.className = 'button button-danger button-compact';
+      revoke.type = 'button';
+      const revokeLabel = document.createElement('span');
+      revokeLabel.textContent = 'Revoke';
+      revoke.append(revokeLabel);
+      revoke.addEventListener('click', () => revokeConnection(connection.id, revoke));
+      item.append(revoke);
+    }
+
+    elements.keyItems.append(item);
+  }
+}
+
+async function revokeConnection(id, button) {
+  setButtonBusy(button, true, 'Revoking');
+  try {
+    const payload = await api('/api/keys/revoke', { method: 'POST', body: { id }, timeoutMs: 15000 });
+    render(payload.status);
+    showToast('Key revoked. Apps using it now receive 401.');
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setButtonBusy(button, false, 'Revoking');
+  }
+}
+
+function renderGateway(status) {
+  const gateway = status.gateway ?? { enabled: false };
+  const connected = Boolean(status.connected);
+  elements.gatewayDisabledCallout.hidden = gateway.enabled;
+  elements.gatewayBody.hidden = !gateway.enabled;
+  elements.gatewayState.textContent = gateway.enabled
+    ? (gateway.linked ? 'Linked' : 'Ready')
+    : 'Off';
+  elements.gatewayState.classList.toggle('is-connected', Boolean(gateway.enabled && gateway.linked));
+  if (!gateway.enabled) return;
+
+  elements.issueKey.disabled = !connected || Boolean(gateway.linked);
+  elements.keyError.textContent = !connected
+    ? 'Connect a Claude account above before issuing a key.'
+    : (gateway.linked ? 'This account is already linked. Disconnect to link another.' : '');
+  renderConnections(gateway);
+}
+
 function render(status) {
   app.status = status;
   app.csrfToken = status.csrfToken;
@@ -176,6 +279,7 @@ function render(status) {
     elements.accessExpiry.textContent = formatExpiry(status.credentials?.accessExpiresAt);
   }
 
+  renderGateway(status);
   renderTimeline();
 }
 
@@ -300,6 +404,41 @@ elements.promptForm.addEventListener('submit', async (event) => {
   } finally {
     setButtonBusy(elements.sendPrompt, false, 'Running isolated inference');
     elements.sendPrompt.disabled = !app.status?.connected;
+  }
+});
+
+elements.keyForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  elements.keyError.textContent = '';
+  setButtonBusy(elements.issueKey, true, 'Issuing key');
+  try {
+    const payload = await api('/api/keys/create', {
+      method: 'POST',
+      body: { label: elements.keyLabel.value.trim() || 'default' },
+      timeoutMs: 20000,
+    });
+    elements.keyValue.textContent = payload.apiKey;
+    elements.keyUsage.textContent = usageSnippet(payload.apiKey);
+    elements.keyReveal.hidden = false;
+    elements.keyLabel.value = '';
+    render(payload.status);
+    showToast('Key issued. Copy it now; it will not be shown again.');
+    elements.keyValue.focus();
+  } catch (error) {
+    elements.keyError.textContent = error.message;
+    showToast(error.message);
+  } finally {
+    setButtonBusy(elements.issueKey, false, 'Issuing key');
+    elements.issueKey.disabled = !app.status?.connected || Boolean(app.status?.gateway?.linked);
+  }
+});
+
+elements.copyKey.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(elements.keyValue.textContent);
+    showToast('Key copied to the clipboard.');
+  } catch {
+    showToast('Copy failed. Select the key and copy it manually.');
   }
 });
 

@@ -197,11 +197,58 @@
           <pre id="response-output" tabindex="0"></pre>
         </section>
       </article>
+
+      <article class="glass-panel gateway-panel" id="gateway-panel" aria-labelledby="gateway-title">
+        <header class="panel-header">
+          <div>
+            <p class="section-index">03 / GATEWAY KEYS</p>
+            <h2 id="gateway-title">Use this subscription from your own apps</h2>
+            <p>Issue a key, point an Anthropic or OpenAI client at this host, and requests run through the same isolated sandbox.</p>
+          </div>
+          <span class="panel-state" id="gateway-state">Off</span>
+        </header>
+
+        <div class="locked-callout" id="gateway-disabled-callout">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="3"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>
+          <div><strong>Gateway mode is off</strong><p>Restart with <code>SESSION_LAB_GATEWAY=1</code> and a <code>SESSION_LAB_MASTER_KEY</code> to enable API keys.</p></div>
+        </div>
+
+        <div id="gateway-body" hidden>
+          <form id="key-form" class="key-form" novalidate>
+            <div class="field-header">
+              <label for="key-label">Key label</label>
+              <span id="key-hint">Shown once at creation</span>
+            </div>
+            <input id="key-label" type="text" maxlength="64" placeholder="my-website" autocomplete="off">
+            <p class="field-error" id="key-error" role="alert"></p>
+            <button class="button button-primary" id="issue-key" type="submit" disabled>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M13 7a3 3 0 1 0-2.8 3H4v3h3v3h3v-3h1.2A3 3 0 0 0 13 7Z"></path></svg>
+              <span>Issue gateway key</span>
+            </button>
+          </form>
+
+          <section class="key-reveal" id="key-reveal" hidden>
+            <div class="response-header">
+              <div><span class="response-dot" aria-hidden="true"></span><h3>Copy this key now</h3></div>
+              <button class="button button-secondary" id="copy-key" type="button"><span>Copy</span></button>
+            </div>
+            <pre id="key-value" tabindex="0"></pre>
+            <p class="field-help">This value is not stored and cannot be shown again. Only its SHA-256 hash is kept.</p>
+            <pre id="key-usage" class="key-usage" tabindex="0"></pre>
+          </section>
+
+          <section class="key-list" aria-labelledby="key-list-title">
+            <h3 id="key-list-title">Linked accounts</h3>
+            <p class="field-help" id="key-empty">No keys issued yet.</p>
+            <ul id="key-items"></ul>
+          </section>
+        </div>
+      </article>
     </section>
 
     <section class="trust-ledger" aria-labelledby="ledger-title">
       <div>
-        <p class="section-index">03 / TRUST LEDGER</p>
+        <p class="section-index">04 / TRUST LEDGER</p>
         <h2 id="ledger-title">Nothing crosses the account boundary.</h2>
       </div>
       <ul>
