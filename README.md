@@ -282,17 +282,30 @@ Issue one key per app so you can revoke them independently.
 npm run link-local -- another-app
 ```
 
-Or use the browser UI, which also works while the server is running, and lets you link a **different** Claude account through the OAuth flow:
+Or use the browser UI. It works while the server is running, and it is the way to link a
+**different** Claude account than the one this machine is signed into — useful if you would
+rather keep your day-to-day account out of it.
 
 ```bash
-# Local server: just open it.
-open http://127.0.0.1:3210
-
-# Remote server: tunnel first, then open the same URL locally.
+# Remote server? Open a tunnel first, then use the same localhost URL.
 ssh -N -L 3210:127.0.0.1:3210 you@your-server
 ```
 
-The UI shows every linked account, its usage counters, and a **Revoke** button. Keys are shown once and stored only as a SHA-256 hash, so a leaked keystore does not leak usable keys.
+Visit <http://127.0.0.1:3210> and:
+
+1. Select **Prepare secure sign-in**. The server generates a one-time PKCE authorization link.
+2. Open that link and check you are signed in as the account you actually want to link.
+3. Approve access. Claude shows you a one-time code.
+4. Paste the code back into the lab and select **Exchange and connect**.
+5. Under **Gateway keys**, name the key and select **Issue gateway key**. Copy it — this is the
+   only time it is shown.
+
+The UI also lists every linked account with its usage counters and a **Revoke** button. Keys are
+stored only as a SHA-256 hash, so a leaked keystore does not leak usable keys.
+
+> [!WARNING]
+> The one-time code from step 3 is a credential. Never paste it into an issue, a chat, a
+> screenshot, or a shell command that lands in your history.
 
 > [!NOTE]
 > `link-local` copies the refresh token that Claude Code on the same machine uses. When either side refreshes, the other may need to sign in again. Link a separate account through the browser UI if that matters to you.
