@@ -297,3 +297,46 @@ test('a rotated refresh token does not split one account into two locks', async 
   assert.deepEqual(order, ['first:start', 'first:end', 'second']);
   await store.close();
 });
+
+test('revoking one key of a shared account does not surrender the shared refresh token', async (t) => {
+  const file = await tempFile(t);
+  const store = await openKeystore({ file, masterKey });
+  const account = { uuid: 'acct-shared', emailAddress: 'owner@example.com' };
+  const tokens = { ...sampleTokens(1), refreshToken: 'shared-refresh', tokenAccount: account };
+  const a = await store.createConnection({ label: 'site-a', tokens });
+  const b = await store.createConnection({ label: 'site-b', tokens });
+
+  // A live sibling still needs this token, so it must not be handed back for upstream revocation.
+  assert.equal(await store.revoke(a.connection.id), null);
+  assert.ok(store.findByApiKey(b.apiKey), 'the sibling key must keep working');
+  assert.equal(store.findByApiKey(a.apiKey), null);
+
+  // The last key for the account does surrender it.
+  assert.equal(await store.revoke(b.connection.id), 'shared-refresh');
+  await store.close();
+});
+
+test('a record written before account fingerprints existed is backfilled on open', async (t) => {
+  const file = await tempFile(t);
+  const store = await openKeystore({ file, masterKey });
+  const account = { uuid: 'legacy-acct', emailAddress: 'legacy@example.com' };
+  const { connection, apiKey } = await store.createConnection({ label: 'legacy', tokens: { ...sampleTokens(1), tokenAccount: account } });
+  await store.close();
+
+  // Simulate the pre-fingerprint on-disk shape.
+  const onDisk = JSON.parse(await readFile(file, 'utf8'));
+  delete onDisk.records[0].accountKey;
+  await writeFile(file, JSON.stringify(onDisk));
+
+  const reopened = await openKeystore({ file, masterKey });
+  const sibling = await reopened.createConnection({ label: 'new', tokens: { ...sampleTokens(2), tokenAccount: account } });
+
+  // Backfill makes the legacy record visible to the shared-account rules again.
+  assert.equal(await reopened.revoke(connection.id), null, 'must not surrender a token a live sibling shares');
+  assert.ok(reopened.findByApiKey(sibling.apiKey));
+  assert.equal(reopened.findByApiKey(apiKey), null);
+  await reopened.close();
+
+  const persisted = JSON.parse(await readFile(file, 'utf8'));
+  assert.ok(persisted.records.every((record) => record.revokedAt || record.accountKey), 'backfill must be persisted');
+});

@@ -126,6 +126,7 @@ export async function openKeystore({ file, masterKey }) {
   process.once('exit', releaseLockSync);
 
   let records = [];
+  let needsBackfill = false;
   let raw = null;
   try {
     raw = await readFile(file, 'utf8');
@@ -149,7 +150,14 @@ export async function openKeystore({ file, masterKey }) {
     records = parsed.records;
     try {
       for (const record of records) {
-        if (record.secret) decryptTokens(masterKey, record.id, record.secret);
+        if (!record.secret) continue;
+        const tokens = decryptTokens(masterKey, record.id, record.secret);
+        // Records written before account fingerprints existed would otherwise be invisible to
+        // the shared-account checks that guard locking and upstream revocation.
+        if (!record.accountKey) {
+          record.accountKey = accountFingerprint(tokens, null);
+          needsBackfill = needsBackfill || Boolean(record.accountKey);
+        }
       }
     } catch (error) {
       await lockHandle.close().catch(() => {});
@@ -185,6 +193,8 @@ export async function openKeystore({ file, masterKey }) {
     writeChain = run.then(() => {}, () => {});
     return run;
   };
+
+  if (needsBackfill) await save();
 
   const find = (id) => records.find((record) => record.id === id) ?? null;
   const mustFind = (id) => {
@@ -259,6 +269,12 @@ export async function openKeystore({ file, masterKey }) {
       await save();
     },
 
+    /**
+     * Revokes one key locally and returns its refresh token for upstream revocation — but only
+     * when no other live key shares the same account. Sibling keys hold the same refresh token,
+     * and revoking it upstream would sign all of them out along with any Claude Code install
+     * using that account.
+     */
     async revoke(id) {
       const record = find(id);
       if (!record) throw notFoundError();
@@ -267,6 +283,9 @@ export async function openKeystore({ file, masterKey }) {
       record.revokedAt = new Date().toISOString();
       record.secret = null;
       await save();
+      const sharedWithLiveSibling = record.accountKey
+        && records.some((other) => other.id !== record.id && !other.revokedAt && other.accountKey === record.accountKey);
+      if (sharedWithLiveSibling) return null;
       return tokens?.refreshToken ?? null;
     },
 
