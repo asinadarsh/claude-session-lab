@@ -61,7 +61,7 @@ test('round-trip persistence across reopen, updateTokens, and usage counters', a
   );
 
   await store.recordUsage(connection.id, { inputTokens: 10, outputTokens: 20, ok: false });
-  await store.flush();
+  await store.close();
 
   const reopened = await openKeystore({ file, masterKey });
   assert.equal(reopened.size, 1);
@@ -74,15 +74,17 @@ test('round-trip persistence across reopen, updateTokens, and usage counters', a
   assert.ok(view.lastUsedAt);
 
   await reopened.updateTokens(connection.id, sampleTokens(2));
+  await reopened.close();
   const again = await openKeystore({ file, masterKey });
   assert.deepEqual(await again.getTokens(connection.id), sampleTokens(2));
+  await again.close();
 });
 
 test('wrong master key produces KEYSTORE_UNREADABLE', async (t) => {
   const file = await tempFile(t);
   const store = await openKeystore({ file, masterKey });
   await store.createConnection({ tokens: sampleTokens() });
-  await store.flush();
+  await store.close();
   await assert.rejects(
     openKeystore({ file, masterKey: randomBytes(32) }),
     (error) => error.code === 'KEYSTORE_UNREADABLE',
@@ -93,7 +95,7 @@ test('corrupt file and unknown version produce KEYSTORE_UNREADABLE', async (t) =
   const file = await tempFile(t);
   const store = await openKeystore({ file, masterKey });
   await store.createConnection({ tokens: sampleTokens() });
-  await store.flush();
+  await store.close();
 
   const original = await readFile(file, 'utf8');
   await writeFile(file, 'not json {');
@@ -128,7 +130,7 @@ test('AAD binding: swapping two records secret blobs makes the keystore unreadab
   const store = await openKeystore({ file, masterKey });
   await store.createConnection({ label: 'one', tokens: sampleTokens(1) });
   await store.createConnection({ label: 'two', tokens: sampleTokens(2) });
-  await store.flush();
+  await store.close();
 
   const parsed = JSON.parse(await readFile(file, 'utf8'));
   [parsed.records[0].secret, parsed.records[1].secret] = [parsed.records[1].secret, parsed.records[0].secret];
@@ -195,13 +197,15 @@ test('atomic writes leave no .tmp behind and keep valid JSON under concurrent sa
   await Promise.all(created.map(({ connection }) => store.recordUsage(connection.id, { inputTokens: 1, outputTokens: 1, ok: true })));
   await store.flush();
 
-  const files = await readdir(dirname(file));
+  const files = (await readdir(dirname(file))).filter((name) => !name.endsWith('.lock'));
   assert.deepEqual(files, ['keystore.json']);
   const parsed = JSON.parse(await readFile(file, 'utf8'));
   assert.equal(parsed.records.length, 3);
 
+  await store.close();
   const reopened = await openKeystore({ file, masterKey });
   assert.equal(reopened.size, 3);
+  await reopened.close();
 });
 
 test('listConnections returns newest first and never leaks secrets', async (t) => {
@@ -214,4 +218,82 @@ test('listConnections returns newest first and never leaks secrets', async (t) =
   assert.deepEqual(views.map((view) => view.id), [second.connection.id, first.connection.id]);
   const serialized = JSON.stringify(views);
   assert.doesNotMatch(serialized, /access-|refresh-|keyHash|secret/);
+});
+
+test('a second writer is refused while the keystore is open, and the lock is released on close', async (t) => {
+  const file = await tempFile(t);
+  const store = await openKeystore({ file, masterKey });
+  const { apiKey } = await store.createConnection({ label: 'first', tokens: sampleTokens(1) });
+
+  // A second in-memory copy would rewrite the whole file and silently drop this key.
+  await assert.rejects(
+    openKeystore({ file, masterKey }),
+    (error) => error.code === 'KEYSTORE_LOCKED' && error.status === 409,
+  );
+
+  await store.close();
+  const second = await openKeystore({ file, masterKey });
+  assert.ok(second.findByApiKey(apiKey), 'the first writer\'s key must survive');
+  await second.close();
+});
+
+test('a lock left by a dead process is stolen rather than blocking forever', async (t) => {
+  const file = await tempFile(t);
+  const store = await openKeystore({ file, masterKey });
+  await store.createConnection({ label: 'held', tokens: sampleTokens(1) });
+  await store.close();
+
+  // An unused pid stands in for a crashed owner.
+  await writeFile(`${file}.lock`, '2147483measure\n'.replace('measure', '000'));
+  const reopened = await openKeystore({ file, masterKey });
+  assert.equal(reopened.size, 1);
+  await reopened.close();
+});
+
+test('two keys for one account share a lock, and the fingerprint never reaches the public view', async (t) => {
+  const file = await tempFile(t);
+  const store = await openKeystore({ file, masterKey });
+  const account = { uuid: 'acct-uuid-1', emailAddress: 'owner@example.com' };
+  const a = await store.createConnection({ label: 'site-a', tokens: { ...sampleTokens(1), tokenAccount: account } });
+  const b = await store.createConnection({ label: 'site-b', tokens: { ...sampleTokens(2), tokenAccount: account } });
+
+  for (const view of store.listConnections()) {
+    assert.ok(!('accountKey' in view), 'the account fingerprint must not be exposed');
+  }
+
+  // Distinct records, one account: their runs must not overlap or both would rotate the token.
+  const order = [];
+  const first = store.withLock(a.connection.id, async () => {
+    order.push('a:start');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    order.push('a:end');
+  });
+  const second = store.withLock(b.connection.id, async () => {
+    order.push('b:start');
+    order.push('b:end');
+  });
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ['a:start', 'a:end', 'b:start', 'b:end']);
+  await store.close();
+});
+
+test('a rotated refresh token does not split one account into two locks', async (t) => {
+  const file = await tempFile(t);
+  const store = await openKeystore({ file, masterKey });
+  const account = { uuid: 'acct-uuid-2', emailAddress: 'owner@example.com' };
+  const { connection } = await store.createConnection({ label: 'a', tokens: { ...sampleTokens(1), tokenAccount: account } });
+  await store.updateTokens(connection.id, { ...sampleTokens(9), refreshToken: 'rotated-refresh', tokenAccount: account });
+  const { connection: later } = await store.createConnection({ label: 'b', tokens: { ...sampleTokens(9), refreshToken: 'rotated-refresh', tokenAccount: account } });
+
+  const order = [];
+  await Promise.all([
+    store.withLock(connection.id, async () => {
+      order.push('first:start');
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      order.push('first:end');
+    }),
+    store.withLock(later.id, () => { order.push('second'); }),
+  ]);
+  assert.deepEqual(order, ['first:start', 'first:end', 'second']);
+  await store.close();
 });

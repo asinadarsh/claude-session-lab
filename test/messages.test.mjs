@@ -122,20 +122,23 @@ test('max_tokens clamps into [256, 64000] and defaults to 4096', () => {
   assert.equal(parseMessagesRequest({ ...base, max_tokens: 'nope' }, LIMITS).maxTokens, 4096);
 });
 
-test('stream, thinking, and stop_sequences parse', () => {
-  const parsed = parseMessagesRequest({
-    stream: true,
-    thinking: { type: 'enabled', budget_tokens: 2048 },
-    stop_sequences: ['END', 'STOP'],
-    messages: [{ role: 'user', content: 'hi' }],
-  }, LIMITS);
+test('stream and thinking parse; stop_sequences is refused rather than dropped', () => {
+  const base = { model: 'sonnet', max_tokens: 500, messages: [{ role: 'user', content: 'hi' }] };
+  const parsed = parseMessagesRequest({ ...base, stream: true, thinking: { type: 'enabled' } }, LIMITS);
   assert.equal(parsed.stream, true);
   assert.equal(parsed.includeThinking, true);
-  assert.deepEqual(parsed.stopSequences, ['END', 'STOP']);
-  assert.throws(() => parseMessagesRequest({
-    stop_sequences: ['a', 'b', 'c', 'd', 'e'],
-    messages: [{ role: 'user', content: 'hi' }],
-  }, LIMITS), (error) => error.code === 'STOP_SEQUENCES_INVALID');
+
+  // The CLI cannot honour stop sequences, so accepting them would mislead the caller.
+  for (const stop_sequences of [['END'], ['a', 'b', 'c', 'd', 'e'], 'END']) {
+    assert.throws(
+      () => parseMessagesRequest({ ...base, stop_sequences }, LIMITS),
+      (error) => error.code === 'STOP_SEQUENCES_UNSUPPORTED' && error.status === 400,
+    );
+  }
+  // Absent, null and empty are all "no stop sequences" and must pass.
+  for (const stop_sequences of [undefined, null, []]) {
+    assert.ok(parseMessagesRequest({ ...base, stop_sequences }, LIMITS).cliInputLine);
+  }
 });
 
 test('image happy path puts the image block before the text block', () => {
@@ -322,4 +325,34 @@ test('declared tools are rejected instead of silently ignored', () => {
   );
   // An empty array is what some SDKs send by default and must stay allowed.
   assert.ok(parseMessagesRequest({ ...base, tools: [] }, limits).cliInputLine);
+});
+
+test('an empty final user message is refused even when history makes the prompt non-empty', () => {
+  const history = [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'yo' }];
+  assert.throws(
+    () => parseMessagesRequest({ model: 'sonnet', max_tokens: 100, messages: [...history, { role: 'user', content: '' }] }, LIMITS),
+    (error) => error.code === 'MESSAGES_INVALID',
+  );
+  assert.throws(
+    () => parseMessagesRequest({ model: 'sonnet', max_tokens: 100, messages: [...history, { role: 'user', content: [] }] }, LIMITS),
+    (error) => error.code === 'MESSAGES_INVALID',
+  );
+});
+
+test('a caption-less image keeps the transcript ending on a human turn', () => {
+  const parsed = parseMessagesRequest({
+    model: 'sonnet',
+    max_tokens: 100,
+    messages: [
+      { role: 'user', content: 'is this a cat?' },
+      { role: 'assistant', content: 'Yes.' },
+      { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }] },
+    ],
+  }, LIMITS);
+  const blocks = JSON.parse(parsed.cliInputLine).message.content;
+  assert.equal(blocks[0].type, 'image');
+  const text = blocks.at(-1).text;
+  assert.equal(blocks.at(-1).type, 'text');
+  assert.ok(!/Assistant: Yes\.\s*$/.test(text), 'the prompt must not end on the assistant turn');
+  assert.match(text, /image attached/);
 });

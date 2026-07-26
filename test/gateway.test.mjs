@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createDecipheriv, randomBytes } from 'node:crypto';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -30,6 +30,17 @@ try {
   process.exit(0);
 }
 await new Promise((resolve) => setTimeout(resolve, 60));
+
+if (text.includes('ROTATE_THEN_FAIL')) {
+  const { readFile, writeFile } = await import('node:fs/promises');
+  const path = process.env.CLAUDE_CONFIG_DIR + '/.credentials.json';
+  const credential = JSON.parse(await readFile(path, 'utf8'));
+  credential.claudeAiOauth.accessToken = 'rotated-access';
+  await writeFile(path, JSON.stringify(credential), { mode: 0o600 });
+  await handle.close();
+  await rm(lock, { force: true });
+  process.exit(3);
+}
 
 const reply = 'echo:' + text.slice(-60) + '|images=' + blocks.filter((b) => b.type === 'image').length;
 const msg = { id: 'msg_fake', type: 'message', role: 'assistant', model: 'claude-sonnet-5', content: [], stop_reason: null, usage: { input_tokens: 7, output_tokens: 0 } };
@@ -75,7 +86,8 @@ async function startServer() {
     },
     profile: null,
   });
-  await keystore.flush();
+  // The server takes an exclusive lock on the keystore, so the seeding handle must let go.
+  await keystore.close();
 
   const port = 31000 + Math.floor(Math.random() * 3000);
   const child = spawn(process.execPath, ['src/server.mjs'], {
@@ -111,6 +123,8 @@ async function startServer() {
     base,
     port,
     apiKey,
+    keystoreFile,
+    masterKey: masterKeyRaw,
     log: () => log,
     async stop() {
       child.kill('SIGTERM');
@@ -121,6 +135,17 @@ async function startServer() {
       await rm(dir, { recursive: true, force: true });
     },
   };
+}
+
+async function readStoredTokens(keystoreFile, masterKeyRaw) {
+  const parsed = JSON.parse(await readFile(keystoreFile, 'utf8'));
+  const [record] = parsed.records;
+  const key = parseMasterKey(masterKeyRaw);
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(record.secret.iv, 'base64'));
+  decipher.setAAD(Buffer.from(record.id));
+  decipher.setAuthTag(Buffer.from(record.secret.tag, 'base64'));
+  const plain = Buffer.concat([decipher.update(Buffer.from(record.secret.data, 'base64')), decipher.final()]);
+  return JSON.parse(plain.toString('utf8'));
 }
 
 function messagesBody(extra = {}) {
@@ -334,6 +359,20 @@ test('gateway surface', async (t) => {
         request.end();
       });
       assert.equal(status, 421);
+    });
+
+    await t.test('a failed run still persists a rotated token', async () => {
+      // The fake CLI rotates the credential then exits non-zero; the rotation must survive.
+      const response = await fetch(`${server.base}/v1/messages`, {
+        method: 'POST',
+        headers,
+        body: messagesBody({ messages: [{ role: 'user', content: 'ROTATE_THEN_FAIL' }] }),
+      });
+      assert.equal(response.status, 502);
+      // The server holds the keystore lock, so decrypt the record straight off disk. This also
+      // checks the stored blob really is AES-256-GCM bound to the record id.
+      const tokens = await readStoredTokens(server.keystoreFile, server.masterKey);
+      assert.equal(tokens.accessToken, 'rotated-access', 'the rotated token must be persisted despite the failure');
     });
 
     await t.test('never logs the API key or tokens', () => {

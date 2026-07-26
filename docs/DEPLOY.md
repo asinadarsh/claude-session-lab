@@ -141,14 +141,21 @@ ssh -N -L 3210:127.0.0.1:3210 you@your-vps
 then open <http://127.0.0.1:3210> locally to link the account and create keys.
 
 If the service user is already signed in to Claude Code on this host, you can skip the browser
-flow entirely and issue a key from the command line:
+flow entirely and issue a key from the command line. The server holds an exclusive lock on the
+keystore while it runs, so stop it first:
 
 ```bash
+sudo systemctl stop claude-session-lab
 sudo -u csl -H bash -c 'cd ~/claude-session-lab && set -a && . /etc/claude-session-lab/env && set +a && npm run link-local -- my-website'
+sudo systemctl start claude-session-lab
 ```
 
-That copies the refresh token Claude Code also uses on this host, so a refresh by either side can
-force the other to sign in again. Link a separate account when that matters.
+Running it against a live server exits with `KEYSTORE_LOCKED` and changes nothing; that lock is
+what stops two writers from silently discarding each other's keys. Use the admin UI instead when
+you would rather not restart.
+
+Note that this copies the refresh token Claude Code also uses on this host, so a refresh by
+either side can force the other to sign in again. Link a separate account when that matters.
 
 ## 5. Firewall
 

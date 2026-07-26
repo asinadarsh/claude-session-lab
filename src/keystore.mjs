@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { unlinkSync } from 'node:fs';
+import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { PublicError, constantTimeEqual, maskEmail, randomToken } from './security.mjs';
 
@@ -11,6 +12,56 @@ const unreadableError = () =>
 
 const notFoundError = () =>
   new PublicError(404, 'CONNECTION_NOT_FOUND', 'No connection exists with that id.');
+
+const lockedError = (pid) =>
+  new PublicError(409, 'KEYSTORE_LOCKED', `Another process (pid ${pid}) already has this keystore open. Stop it, or use the admin UI instead.`);
+
+/**
+ * Stable identity for the Claude account behind a connection, used to serialize runs across
+ * every key that shares it. Account uuid and email come first because they survive a refresh
+ * token rotation; the token hash is only a last resort. Always hashed, so the record never
+ * carries the raw value.
+ */
+function accountFingerprint(tokens, profile) {
+  const seed = tokens?.tokenAccount?.uuid
+    ?? profile?.emailAddress
+    ?? tokens?.tokenAccount?.emailAddress
+    ?? tokens?.refreshToken
+    ?? null;
+  return seed ? createHash('sha256').update(String(seed)).digest('hex').slice(0, 32) : null;
+}
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
+
+/**
+ * Every writer rewrites the whole file from its own in-memory records, so two writers would
+ * silently drop each other's changes. A lock held for the keystore's lifetime makes that a
+ * clear error instead. A lock whose owner is gone is stolen rather than blocking forever.
+ */
+async function acquireLock(lockFile) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await open(lockFile, 'wx', 0o600);
+      await handle.write(`${process.pid}\n`);
+      await handle.sync();
+      return handle;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const owner = Number.parseInt(await readFile(lockFile, 'utf8').catch(() => ''), 10);
+      if (processAlive(owner) || owner === process.pid) throw lockedError(owner || 'unknown');
+      await unlink(lockFile).catch(() => {});
+    }
+  }
+  throw lockedError('unknown');
+}
 
 export function parseMasterKey(raw) {
   const value = typeof raw === 'string' ? raw.trim() : '';
@@ -67,6 +118,13 @@ export async function openKeystore({ file, masterKey }) {
   if (!Buffer.isBuffer(masterKey) || masterKey.length !== 32) throw masterKeyError();
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
 
+  const lockFile = `${file}.lock`;
+  const lockHandle = await acquireLock(lockFile);
+  const releaseLockSync = () => {
+    try { unlinkSync(lockFile); } catch {}
+  };
+  process.once('exit', releaseLockSync);
+
   let records = [];
   let raw = null;
   try {
@@ -79,19 +137,47 @@ export async function openKeystore({ file, masterKey }) {
     try {
       parsed = JSON.parse(raw);
     } catch {
+      await lockHandle.close().catch(() => {});
+      releaseLockSync();
       throw unreadableError();
     }
-    if (parsed?.version !== 1 || !Array.isArray(parsed.records)) throw unreadableError();
+    if (parsed?.version !== 1 || !Array.isArray(parsed.records)) {
+      await lockHandle.close().catch(() => {});
+      releaseLockSync();
+      throw unreadableError();
+    }
     records = parsed.records;
-    for (const record of records) {
-      if (record.secret) decryptTokens(masterKey, record.id, record.secret);
+    try {
+      for (const record of records) {
+        if (record.secret) decryptTokens(masterKey, record.id, record.secret);
+      }
+    } catch (error) {
+      await lockHandle.close().catch(() => {});
+      releaseLockSync();
+      throw error;
     }
   }
 
   const tmp = `${file}.tmp`;
+  // A rename alone can be reordered against the data write on a crash, which for a credential
+  // store means a rotated-out refresh token or an empty file surviving instead of the new one.
   const persist = async () => {
-    await writeFile(tmp, JSON.stringify({ version: 1, records }), { mode: 0o600 });
+    const handle = await open(tmp, 'w', 0o600);
+    try {
+      await handle.writeFile(JSON.stringify({ version: 1, records }), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await rename(tmp, file);
+    const dir = await open(dirname(file), 'r');
+    try {
+      await dir.sync();
+    } catch {
+      // Directory fsync is unsupported on some filesystems; the data fsync above still holds.
+    } finally {
+      await dir.close();
+    }
   };
   let writeChain = Promise.resolve();
   const save = () => {
@@ -118,6 +204,7 @@ export async function openKeystore({ file, masterKey }) {
         label: sanitizeLabel(label),
         keyHash: createHash('sha256').update(apiKey).digest('hex'),
         keyPrefix: apiKey.slice(0, 12),
+        accountKey: accountFingerprint(tokens, profile),
         createdAt: new Date().toISOString(),
         lastUsedAt: null,
         revokedAt: null,
@@ -183,19 +270,30 @@ export async function openKeystore({ file, masterKey }) {
       return tokens?.refreshToken ?? null;
     },
 
+    // Keyed by account, not by record: several keys can point at one Claude account, and two
+    // concurrent runs against the same account would each rotate its refresh token and
+    // invalidate the other. Records without a fingerprint fall back to their own id.
     withLock(id, fn) {
-      const prev = locks.get(id) ?? Promise.resolve();
+      const key = find(id)?.accountKey ?? id;
+      const prev = locks.get(key) ?? Promise.resolve();
       const run = prev.then(() => fn());
       const tail = run.then(() => {}, () => {});
-      locks.set(id, tail);
+      locks.set(key, tail);
       tail.then(() => {
-        if (locks.get(id) === tail) locks.delete(id);
+        if (locks.get(key) === tail) locks.delete(key);
       });
       return run;
     },
 
     flush() {
       return writeChain;
+    },
+
+    async close() {
+      await writeChain.catch(() => {});
+      await lockHandle.close().catch(() => {});
+      releaseLockSync();
+      process.removeListener('exit', releaseLockSync);
     },
 
     get size() {

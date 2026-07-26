@@ -38,7 +38,7 @@ A subset of the [Anthropic Messages API](https://docs.anthropic.com/en/api/messa
 | `system` | String system prompt. |
 | `max_tokens` | Required by the schema; clamped to the range 256–64000. |
 | `stream` | `true` for SSE streaming. |
-| `stop_sequences` | Passed through. |
+| `stop_sequences` | **Rejected** with `400 invalid_request_error`. The CLI exposes no stop-sequence control, and accepting the field would let generation run past your delimiter while still reporting `end_turn`. Trim the response on your side. |
 | `thinking` | When requested, `thinking` blocks are included in the response. |
 
 ### Rejected fields
@@ -148,7 +148,7 @@ An OpenAI-compatible subset, translated onto the same sandbox with the same limi
 | `messages` (`user` / `assistant`) | Flattened into a single prompt, same as `/v1/messages`. |
 | `model` | Passed through; must be a model from `GET /v1/models`. |
 | `max_tokens` / `max_completion_tokens` | Clamped 256–64000. |
-| `stop` | Mapped to `stop_sequences`. |
+| `stop` | **Rejected** with `400 invalid_request_error` (same reason as `stop_sequences`). |
 | `stream` | SSE with OpenAI-style `chat.completion.chunk` objects, terminated by `data: [DONE]`. |
 | `temperature`, `top_p`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `seed`, `response_format` | **Silently ignored.** The CLI does not expose sampling controls, so rejecting these would break clients that always send them. |
 | `tools`, `tool_choice`, `functions`, `function_call` | **Rejected** with `400 invalid_request_error`. |

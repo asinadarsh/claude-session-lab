@@ -57,12 +57,17 @@ try {
   console.error('link-local: could not read the account profile; continuing without plan metadata.');
 }
 
-const keystore = await openKeystore({
-  file: APP_CONFIG.keystoreFile,
-  masterKey: parseMasterKey(APP_CONFIG.gateway.masterKey),
-});
+let keystore;
+try {
+  keystore = await openKeystore({
+    file: APP_CONFIG.keystoreFile,
+    masterKey: parseMasterKey(APP_CONFIG.gateway.masterKey),
+  });
+} catch (error) {
+  fail(error.publicMessage ?? error.message);
+}
 const { connection, apiKey } = await keystore.createConnection({ label, tokens, profile });
-await keystore.flush();
+await keystore.close();
 
 console.log(`Linked ${connection.account.emailMasked ?? 'account'} (${connection.account.plan ?? 'plan unknown'}) as "${connection.label}".`);
 console.log(`Keystore: ${APP_CONFIG.keystoreFile}`);

@@ -153,15 +153,11 @@ export function parseMessagesRequest(body, limits) {
   const stream = body.stream === true;
   const includeThinking = body.thinking?.type === 'enabled';
 
-  let stopSequences = [];
-  if (body.stop_sequences !== undefined) {
-    const valid = Array.isArray(body.stop_sequences)
-      && body.stop_sequences.length <= 4
-      && body.stop_sequences.every((value) => typeof value === 'string' && value.length > 0 && value.length <= 64);
-    if (!valid) {
-      throw new PublicError(400, 'STOP_SEQUENCES_INVALID', 'stop_sequences must be an array of up to 4 short strings.');
-    }
-    stopSequences = [...body.stop_sequences];
+  // The CLI exposes no stop-sequence control, and accepting the field would silently let
+  // generation run past the caller's delimiter while still reporting stop_reason 'end_turn'.
+  // Refusing it is the same choice made for tools: fail loudly rather than mislead.
+  if (Array.isArray(body.stop_sequences) ? body.stop_sequences.length > 0 : body.stop_sequences !== undefined && body.stop_sequences !== null) {
+    throw new PublicError(400, 'STOP_SEQUENCES_UNSUPPORTED', 'Stop sequences are not supported by this gateway (stop_sequences, or stop on the OpenAI surface); trim the response on your side.');
   }
 
   const transcriptParts = [];
@@ -170,13 +166,21 @@ export function parseMessagesRequest(body, limits) {
     transcriptParts.push(`${label}: ${transcriptText(message.content)}`);
   }
   const final = finalUserContent(messages[messages.length - 1].content, limits);
+  // Checked against the final message alone. Once a transcript preamble is prepended the
+  // combined text is never empty, so a caption-less image or an empty string would otherwise
+  // be flattened into a prompt that just ends on the assistant's previous turn.
+  if (final.text.length === 0 && final.images.length === 0) {
+    throw invalidMessages('The final user message needs text or image content.');
+  }
 
   let historyChars = 0;
   let promptText = final.text;
   if (transcriptParts.length > 0) {
     const preamble = `${TRANSCRIPT_FRAMING}\n\n${transcriptParts.join('\n\n')}\n\n`;
     historyChars = preamble.length;
-    promptText = preamble + final.text;
+    // A caption-less image is a normal chat shape, but appended to a transcript it would leave
+    // the prompt ending on the assistant's own turn with no new request to answer.
+    promptText = preamble + (final.text || 'Human: (image attached with no caption)');
   }
   if (promptText.length > limits.maxPromptChars) {
     throw new PublicError(413, 'PROMPT_TOO_LARGE', `The flattened prompt exceeds ${limits.maxPromptChars} characters.`);
@@ -195,7 +199,6 @@ export function parseMessagesRequest(body, limits) {
     stream,
     maxTokens,
     includeThinking,
-    stopSequences,
     historyChars,
   };
 }

@@ -56,7 +56,6 @@ export const APP_CONFIG = Object.freeze({
   gateway: Object.freeze({
     enabled: gatewayEnabled,
     masterKey,
-    trustProxy: boolEnv('SESSION_LAB_TRUST_PROXY', false),
     corsOrigins: (process.env.SESSION_LAB_CORS_ORIGINS ?? '')
       .split(',')
       .map((value) => value.trim())

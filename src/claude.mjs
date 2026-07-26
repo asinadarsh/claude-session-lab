@@ -1,11 +1,26 @@
 import { spawn } from 'node:child_process';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, rmSync } from 'node:fs';
 import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PublicError } from './security.mjs';
 
 const ONE_MIB = 1024 * 1024;
+
+// Sandboxes in flight. A forced exit skips the async cleanup in `finally`, which would leave a
+// plaintext credential file on tmpfs, so they are also removed synchronously on process exit.
+const activeSandboxes = new Set();
+let exitCleanupRegistered = false;
+function registerExitCleanup() {
+  if (exitCleanupRegistered) return;
+  exitCleanupRegistered = true;
+  process.on('exit', () => {
+    for (const root of activeSandboxes) {
+      try { rmSync(root, { recursive: true, force: true }); } catch {}
+    }
+    activeSandboxes.clear();
+  });
+}
 
 // Sent when the caller supplies no system prompt. Passing --system-prompt replaces the
 // Claude Code agent preamble, which keeps API behaviour close to the Messages API and
@@ -178,24 +193,34 @@ export async function runClaudeStream({
   if (typeof cliInputLine !== 'string' || !cliInputLine || cliInputLine.includes('\n')) {
     throw new PublicError(500, 'CLI_INPUT_INVALID', 'The request could not be prepared for the inference sandbox.');
   }
+  registerExitCleanup();
 
   const base = await temporaryBase();
   const root = await mkdtemp(join(base, 'run-'));
+  activeSandboxes.add(root);
   const home = join(root, 'home');
   const config = join(root, 'config');
   const work = join(root, 'work');
   const credentialsPath = join(config, '.credentials.json');
-  await Promise.all([
-    mkdir(home, { mode: 0o700 }),
-    mkdir(config, { mode: 0o700 }),
-    mkdir(work, { mode: 0o700 }),
-  ]);
-  await writeFile(credentialsPath, `${JSON.stringify(buildCredentialPayload(tokens))}\n`, {
-    encoding: 'utf8',
-    mode: 0o600,
-    flag: 'wx',
-  });
-  await chmod(credentialsPath, 0o600);
+  try {
+    await Promise.all([
+      mkdir(home, { mode: 0o700 }),
+      mkdir(config, { mode: 0o700 }),
+      mkdir(work, { mode: 0o700 }),
+    ]);
+    await writeFile(credentialsPath, `${JSON.stringify(buildCredentialPayload(tokens))}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+    await chmod(credentialsPath, 0o600);
+  } catch (error) {
+    // The sandbox holds a plaintext credential, so a failed setup must not leave it behind.
+    activeSandboxes.delete(root);
+    await rm(root, { recursive: true, force: true }).catch(() => {});
+    if (error instanceof PublicError) throw error;
+    throw new PublicError(500, 'SANDBOX_SETUP_FAILED', 'The inference sandbox could not be prepared. Check free space on /dev/shm.');
+  }
 
   const env = {
     PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
@@ -289,12 +314,21 @@ export async function runClaudeStream({
 
     const updatedTokens = await readUpdatedTokens(credentialsPath, tokens);
     if (aborted) return { updatedTokens, aborted: true, exitCode: outcome.code };
-    if (timedOut) throw new PublicError(504, 'CLAUDE_TIMEOUT', 'Claude took too long to respond. Try a shorter request.');
+    // The CLI may have rotated the OAuth token before failing. Losing that rotation would
+    // leave the caller holding a refresh token the upstream has already invalidated, so it
+    // rides along on the error for the caller to persist.
+    const failWith = (error) => {
+      error.updatedTokens = updatedTokens;
+      return error;
+    };
+    if (timedOut) {
+      throw failWith(new PublicError(504, 'CLAUDE_TIMEOUT', 'Claude took too long to respond. Try a shorter request.'));
+    }
     if (outputOverflow || stdout.overflow || stderr.overflow) {
-      throw new PublicError(502, 'CLAUDE_OUTPUT_LIMIT', 'Claude produced more output than this gateway allows.');
+      throw failWith(new PublicError(502, 'CLAUDE_OUTPUT_LIMIT', 'Claude produced more output than this gateway allows.'));
     }
     if (outcome.code !== 0) {
-      throw new PublicError(502, 'CLAUDE_PROCESS_FAILED', 'The isolated Claude process exited unexpectedly. Retry once.');
+      throw failWith(new PublicError(502, 'CLAUDE_PROCESS_FAILED', 'The isolated Claude process exited unexpectedly. Retry once.'));
     }
     return { updatedTokens, aborted: false, exitCode: outcome.code };
   } catch (error) {
@@ -307,6 +341,7 @@ export async function runClaudeStream({
     if (onAbort && signal) signal.removeEventListener('abort', onAbort);
     if (child && child.exitCode === null) terminateProcessGroup(child, 'SIGKILL');
     clearTimeout(hardKillTimer);
+    activeSandboxes.delete(root);
     await rm(root, { recursive: true, force: true }).catch(() => {});
   }
 }

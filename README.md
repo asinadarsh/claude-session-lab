@@ -83,7 +83,7 @@ npm run link-local -- my-website
 
 Read [docs/API.md](docs/API.md) for the request and response contract and [docs/DEPLOY.md](docs/DEPLOY.md) for the systemd unit and the Caddy block that exposes only `/v1/*` while keeping the admin UI on an SSH tunnel.
 
-**What is different from the real Anthropic API.** Conversation history is flattened into a single prompt, so one request costs one model turn no matter how long the thread is. Tool use, `tool_result`, and image URL sources are rejected rather than silently ignored. `max_tokens` is a soft clamp with a 256 floor. Thinking blocks are hidden unless the caller asks for them. Requests are serialized per linked account, because two concurrent runs would both rotate the OAuth refresh token.
+**What is different from the real Anthropic API.** Conversation history is flattened into a single prompt, so one request costs one model turn no matter how long the thread is. Tool use, `tool_result`, stop sequences, and image URL sources are rejected rather than silently ignored. `max_tokens` is a soft clamp with a 256 floor. Thinking blocks are hidden unless the caller asks for them. Requests are serialized per linked account, because two concurrent runs would both rotate the OAuth refresh token.
 
 > [!IMPORTANT]
 > A subscription is metered per five-hour window and is not a resale license. Link only accounts you own, keep keys to your own apps, and do not sell or share gateway access. Review the applicable service terms before enabling this mode.
@@ -124,7 +124,7 @@ npm run check
 ./run.sh
 ```
 
-The server listens on `127.0.0.1:3210` and cannot be switched to a public interface through an environment variable.
+By default the server listens on `127.0.0.1:3210`. Gateway mode is meant to be published through a reverse proxy that forwards only `/v1/*`; binding the process itself to a public interface requires both `SESSION_LAB_HOST` and `SESSION_LAB_ALLOW_PUBLIC_BIND=1`, and the admin UI refuses non-localhost `Host` headers either way.
 
 From your workstation, keep an SSH tunnel open:
 
@@ -149,15 +149,16 @@ Never paste an authorization code into an issue, chat, terminal history, or scre
 
 | Boundary | Control |
 |---|---|
-| Network | Hard-bound to `127.0.0.1`; exact Host and Origin allowlists |
+| Network | Binds `127.0.0.1` unless explicitly overridden; the admin UI enforces exact Host and Origin allowlists, so only `/v1/*` is proxyable |
 | Browser session | Random HttpOnly, SameSite=Strict cookie plus independent CSRF token |
 | OAuth transaction | 32-byte verifier, S256 challenge, random state, 10-minute expiry, one-time consumption |
-| Token storage | Process memory; no token fields in API responses or browser storage |
+| Token storage | Process memory in lab mode; in gateway mode AES-256-GCM at rest under a master key, bound to the record id. No token fields in any API response or browser storage |
 | Inference | Separate HOME, config, cache, temp, working directory, disabled tools and telemetry |
 | Filesystem | Mode-700 sandbox and mode-600 temporary credential file |
-| Concurrency | One active inference per browser session |
+| Concurrency | One active inference per browser session, and one per linked account across every key and the admin UI |
 | Failure handling | Bounded network/process timeouts, output limits, process-group termination, redacted errors |
 | Logging | Method, path, status, duration, request ID - never request bodies or credentials |
+| Gateway keys | Shown once, stored only as SHA-256, revocable, rate-limited and queue-capped per key |
 
 Read the full [security model](docs/SECURITY_MODEL.md) before adapting this code.
 

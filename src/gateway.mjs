@@ -77,28 +77,42 @@ export function createGateway({ keystore, config }) {
         let committed = false;
         let failure = null;
 
-        const { updatedTokens, aborted } = await runClaudeStream({
-          tokens,
-          cliInputLine: parsed.cliInputLine,
-          model: parsed.model,
-          systemPrompt: parsed.systemPrompt,
-          maxTokens: parsed.maxTokens,
-          binary: config.claudeBinary,
-          timeoutMs: config.gateway.requestTimeoutMs,
-          maxOutputBytes: config.maxClaudeOutputBytes,
-          signal,
-          onEvent: (obj) => {
-            collector.push(obj);
-            if (!emit) return;
-            for (const { event, data } of streamEventsFor(obj, streamState, { includeThinking: parsed.includeThinking })) {
-              committed = true;
-              emit(event, data);
-            }
-          },
-        });
+        const persistRotation = async (rotated) => {
+          if (rotated && rotated.accessToken !== tokens.accessToken) {
+            await keystore.updateTokens(record.id, rotated);
+          }
+        };
 
-        if (updatedTokens && updatedTokens.accessToken !== tokens.accessToken) {
-          await keystore.updateTokens(record.id, updatedTokens);
+        let aborted;
+        try {
+          const outcome = await runClaudeStream({
+            tokens,
+            cliInputLine: parsed.cliInputLine,
+            model: parsed.model,
+            systemPrompt: parsed.systemPrompt,
+            maxTokens: parsed.maxTokens,
+            binary: config.claudeBinary,
+            timeoutMs: config.gateway.requestTimeoutMs,
+            maxOutputBytes: config.maxClaudeOutputBytes,
+            signal,
+            onEvent: (obj) => {
+              collector.push(obj);
+              if (!emit) return;
+              for (const { event, data } of streamEventsFor(obj, streamState, { includeThinking: parsed.includeThinking })) {
+                committed = true;
+                emit(event, data);
+              }
+            },
+          });
+          aborted = outcome.aborted;
+          await persistRotation(outcome.updatedTokens);
+        } catch (error) {
+          // A failed run may still have rotated the token. Dropping that rotation would leave
+          // the stored refresh token already invalidated upstream.
+          await persistRotation(error?.updatedTokens).catch(() => {});
+          await keystore.recordUsage(record.id, { inputTokens: 0, outputTokens: 0, ok: false }).catch(() => {});
+          if (error) error.committed = committed;
+          throw error;
         }
 
         const result = collector.result;

@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { APP_CONFIG } from './config.mjs';
-import { runClaudePrompt } from './claude.mjs';
+import { buildUserLine, runClaudePrompt } from './claude.mjs';
 import { createGateway } from './gateway.mjs';
 import { openKeystore, parseMasterKey } from './keystore.mjs';
 import {
@@ -144,6 +144,7 @@ function createSession(res) {
     profile: null,
     chatActive: false,
     linked: false,
+    connectionId: null,
   };
   sessions.set(id, session);
   res.setHeader('Set-Cookie', sessionCookie(
@@ -239,11 +240,18 @@ async function readJson(req, maxBytes = APP_CONFIG.maxJsonBytes) {
     }
     chunks.push(chunk);
   }
+  let parsed;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
   } catch {
     throw new PublicError(400, 'JSON_INVALID', 'The request body is not valid JSON.');
   }
+  // `null`, `[]` and bare scalars parse fine but every endpoint here reads named fields off
+  // an object, so rejecting them once is what keeps callers from crashing on a property read.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new PublicError(400, 'JSON_INVALID', 'The request body must be a JSON object.');
+  }
+  return parsed;
 }
 
 function requireGateway() {
@@ -279,16 +287,22 @@ function startSse(res) {
   res.flushHeaders?.();
 }
 
-// Streaming responses commit their 200 only once the first event exists, so an
-// authentication or upstream failure can still be reported as a real HTTP status.
-async function runStreaming(req, res, { record, parsed, requestId, wire }) {
+// A caller that hangs up should stop burning subscription quota and release the per-account
+// lock instead of running a full turn nobody will read.
+function abortOnDisconnect(req, res) {
   const controller = new AbortController();
-  const onClose = () => controller.abort();
-  req.once('aborted', onClose);
+  const onAborted = () => controller.abort();
+  req.once('aborted', onAborted);
   res.once('close', () => {
     if (!res.writableEnded) controller.abort();
   });
+  return controller;
+}
 
+// Streaming responses commit their 200 only once the first event exists, so an
+// authentication or upstream failure can still be reported as a real HTTP status.
+async function runStreaming(req, res, { record, parsed, requestId, wire }) {
+  const controller = abortOnDisconnect(req, res);
   let started = false;
   const emit = (event, data) => {
     if (!started) {
@@ -319,8 +333,6 @@ async function runStreaming(req, res, { record, parsed, requestId, wire }) {
       res.write(wire.errorChunk(status, message));
       res.end();
     }
-  } finally {
-    req.removeListener('aborted', onClose);
   }
 }
 
@@ -400,7 +412,13 @@ async function handleGatewayApi(req, res, pathname, requestId) {
       await runStreaming(req, res, { record, parsed, requestId, wire: ANTHROPIC_WIRE });
       return;
     }
-    const outcome = await gateway.run({ record, parsed, requestId });
+    const outcome = await gateway.run({
+      record,
+      parsed,
+      requestId,
+      signal: abortOnDisconnect(req, res).signal,
+    });
+    if (outcome.aborted) return;
     rateLimitHeaders(res, outcome.rateLimit);
     sendJson(res, 200, outcome.message);
     return;
@@ -419,7 +437,13 @@ async function handleGatewayApi(req, res, pathname, requestId) {
       });
       return;
     }
-    const outcome = await gateway.run({ record, parsed, requestId });
+    const outcome = await gateway.run({
+      record,
+      parsed,
+      requestId,
+      signal: abortOnDisconnect(req, res).signal,
+    });
+    if (outcome.aborted) return;
     rateLimitHeaders(res, outcome.rateLimit);
     sendJson(res, 200, fromAnthropicMessage(outcome.message, {
       model: outcome.message?.model || parsed.model,
@@ -452,6 +476,7 @@ async function handleKeysApi(req, res, pathname, session) {
       tokens: session.tokens,
       profile: session.profile,
     });
+    session.connectionId = connection.id;
     // Ownership of the refresh token moves to the keystore; the browser session must not
     // revoke it on disconnect any more.
     session.linked = true;
@@ -546,6 +571,7 @@ async function handleApi(req, res, pathname) {
     session.tokens = tokens;
     session.profile = profile;
     session.linked = false;
+    session.connectionId = null;
     sendJson(res, 200, { status: publicStatus(session) });
     return;
   }
@@ -565,6 +591,40 @@ async function handleApi(req, res, pathname) {
 
     session.chatActive = true;
     try {
+      // Once the account is linked, the keystore owns its tokens. Running this prompt from the
+      // session's own copy would race a concurrent /v1 request: both would refresh, and the
+      // second rotation would invalidate the first. So a linked session shares the same lock.
+      if (session.connectionId && gateway) {
+        const outcome = await gateway.run({
+          record: { id: session.connectionId },
+          parsed: {
+            cliInputLine: buildUserLine(prompt),
+            model: 'sonnet',
+            systemPrompt: null,
+            maxTokens: APP_CONFIG.gateway.defaultMaxTokens,
+            includeThinking: false,
+          },
+          requestId: 'admin-chat',
+        });
+        const message = outcome.message;
+        const text = (message?.content ?? [])
+          .filter((block) => block?.type === 'text')
+          .map((block) => block.text)
+          .join('');
+        session.lastSeen = Date.now();
+        sendJson(res, 200, {
+          response: {
+            text,
+            model: message?.model ?? null,
+            durationMs: null,
+            inputTokens: outcome.usage?.inputTokens ?? null,
+            outputTokens: outcome.usage?.outputTokens ?? null,
+          },
+          status: publicStatus(session),
+        });
+        return;
+      }
+
       const { response, updatedTokens } = await runClaudePrompt({
         tokens: session.tokens,
         prompt,
@@ -593,6 +653,7 @@ async function handleApi(req, res, pathname) {
     session.tokens = null;
     session.profile = null;
     session.linked = false;
+    session.connectionId = null;
     await revokeRefreshToken(refreshToken, { timeoutMs: APP_CONFIG.revokeTimeoutMs });
     sendJson(res, 200, { status: publicStatus(session) });
     return;
@@ -702,7 +763,7 @@ function shutdown(signal) {
   console.log(`Received ${signal}; closing server.`);
   clearInterval(cleanupTimer);
   sessions.clear();
-  const done = keystore ? keystore.flush().catch(() => {}) : Promise.resolve();
+  const done = keystore ? keystore.close().catch(() => {}) : Promise.resolve();
   void done.then(() => server.close(() => process.exit(0)));
   setTimeout(() => process.exit(1), 5000).unref();
 }
