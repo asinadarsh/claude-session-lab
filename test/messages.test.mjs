@@ -307,3 +307,19 @@ test('anthropic error helpers use real error type strings', () => {
   assert.equal(errorTypeForStatus(502), 'api_error');
   assert.equal(errorTypeForStatus(418), 'invalid_request_error');
 });
+
+test('declared tools are rejected instead of silently ignored', () => {
+  const base = { model: 'sonnet', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }] };
+  const limits = { maxPromptChars: 10000, maxImages: 4, maxImageBytes: 100000, maxMessages: 50 };
+
+  assert.throws(
+    () => parseMessagesRequest({ ...base, tools: [{ name: 'lookup', input_schema: { type: 'object' } }] }, limits),
+    (error) => error.code === 'TOOL_USE_UNSUPPORTED' && error.status === 400,
+  );
+  assert.throws(
+    () => parseMessagesRequest({ ...base, tool_choice: { type: 'auto' } }, limits),
+    (error) => error.code === 'TOOL_USE_UNSUPPORTED',
+  );
+  // An empty array is what some SDKs send by default and must stay allowed.
+  assert.ok(parseMessagesRequest({ ...base, tools: [] }, limits).cliInputLine);
+});

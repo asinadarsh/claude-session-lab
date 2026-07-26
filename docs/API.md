@@ -56,7 +56,7 @@ curl https://gateway.example.com/v1/messages \
   -H "x-api-key: csl_sk_..." \
   -H "content-type: application/json" \
   -d '{
-    "model": "claude-sonnet-4-5",
+    "model": "claude-sonnet-5",
     "max_tokens": 1024,
     "system": "You are a concise assistant.",
     "messages": [
@@ -85,7 +85,7 @@ curl https://gateway.example.com/v1/messages \
   "id": "msg_01ABC...",
   "type": "message",
   "role": "assistant",
-  "model": "claude-sonnet-4-5",
+  "model": "claude-sonnet-5",
   "content": [
     { "type": "text", "text": "A small terrier standing on a wooden dock." }
   ],
@@ -150,9 +150,9 @@ An OpenAI-compatible subset, translated onto the same sandbox with the same limi
 | `max_tokens` / `max_completion_tokens` | Clamped 256–64000. |
 | `stop` | Mapped to `stop_sequences`. |
 | `stream` | SSE with OpenAI-style `chat.completion.chunk` objects, terminated by `data: [DONE]`. |
-| `temperature`, `top_p`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `seed`, `n` | **Silently ignored.** The CLI does not expose sampling controls. |
+| `temperature`, `top_p`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `seed`, `response_format` | **Silently ignored.** The CLI does not expose sampling controls, so rejecting these would break clients that always send them. |
 | `tools`, `tool_choice`, `functions`, `function_call` | **Rejected** with `400 invalid_request_error`. |
-| `response_format` | **Rejected** with `400 invalid_request_error`. |
+| `n` | `n: 1` is ignored; `n` greater than 1 is **rejected** with `400 invalid_request_error`. |
 
 ### finish_reason mapping
 
@@ -169,7 +169,7 @@ curl https://gateway.example.com/v1/chat/completions \
   -H "Authorization: Bearer csl_sk_..." \
   -H "content-type: application/json" \
   -d '{
-    "model": "claude-sonnet-4-5",
+    "model": "claude-sonnet-5",
     "max_tokens": 512,
     "messages": [
       { "role": "system", "content": "You are a concise assistant." },
@@ -183,7 +183,7 @@ curl https://gateway.example.com/v1/chat/completions \
   "id": "chatcmpl-...",
   "object": "chat.completion",
   "created": 1753600000,
-  "model": "claude-sonnet-4-5",
+  "model": "claude-sonnet-5",
   "choices": [
     {
       "index": 0,
@@ -252,7 +252,7 @@ The gateway speaks both wire formats, so official SDKs work by overriding the ba
 curl https://gateway.example.com/v1/messages \
   -H "x-api-key: csl_sk_..." \
   -H "content-type: application/json" \
-  -d '{"model":"claude-sonnet-4-5","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'
+  -d '{"model":"claude-sonnet-5","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ### @anthropic-ai/sdk (Node)
@@ -266,7 +266,7 @@ const client = new Anthropic({
 });
 
 const msg = await client.messages.create({
-  model: 'claude-sonnet-4-5',
+  model: 'claude-sonnet-5',
   max_tokens: 512,
   messages: [{ role: 'user', content: 'Hello' }],
 });
@@ -283,7 +283,7 @@ client = Anthropic(
 )
 
 msg = client.messages.create(
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-5",
     max_tokens=512,
     messages=[{"role": "user", "content": "Hello"}],
 )
@@ -300,7 +300,7 @@ client = OpenAI(
 )
 
 resp = client.chat.completions.create(
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-5",
     max_tokens=512,
     messages=[{"role": "user", "content": "Hello"}],
 )
@@ -317,7 +317,7 @@ const client = new OpenAI({
 });
 
 const resp = await client.chat.completions.create({
-  model: 'claude-sonnet-4-5',
+  model: 'claude-sonnet-5',
   max_tokens: 512,
   messages: [{ role: 'user', content: 'Hello' }],
 });
@@ -334,7 +334,7 @@ const anthropic = createAnthropic({
 });
 ```
 
-Then use `anthropic('claude-sonnet-4-5')` as the model in `generateText` / `streamText`. Tool calling will fail — the gateway rejects `tools`.
+Then use `anthropic('claude-sonnet-5')` as the model in `generateText` / `streamText`. Tool calling will fail — the gateway rejects `tools`.
 
 ## Behavior differences from the real Anthropic API
 

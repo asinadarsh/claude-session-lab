@@ -121,6 +121,12 @@ export function parseMessagesRequest(body, limits) {
     throw invalidMessages('The request body must be a JSON object.');
   }
   const model = resolveModel(body.model);
+  // Silently ignoring tools would leave the caller waiting for a tool_use block that can
+  // never arrive, so declared tools are refused outright. Empty arrays are what some SDKs
+  // send by default and mean "no tools".
+  if ((Array.isArray(body.tools) && body.tools.length > 0) || body.tool_choice !== undefined) {
+    throw new PublicError(400, 'TOOL_USE_UNSUPPORTED', 'This gateway runs with tools disabled; remove tools and tool_choice.');
+  }
   const systemPrompt = flattenSystem(body.system);
   const messages = body.messages;
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -143,7 +149,7 @@ export function parseMessagesRequest(body, limits) {
 
   const maxTokens = Number.isInteger(body.max_tokens) && body.max_tokens > 0
     ? Math.min(64000, Math.max(256, body.max_tokens))
-    : 4096;
+    : (limits?.defaultMaxTokens ?? 4096);
   const stream = body.stream === true;
   const includeThinking = body.thinking?.type === 'enabled';
 

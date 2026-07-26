@@ -346,23 +346,24 @@ const ANTHROPIC_WIRE = {
   },
 };
 
-function openaiWire({ model, id, created }) {
-  const adapter = createStreamAdapter({ id, model, created });
+function openaiWire({ requestedModel, id, created }) {
   return {
     passthrough: false,
     chunk: (_event, data) => `data: ${JSON.stringify(data)}\n\n`,
     errorChunk: (status, message) => `data: ${JSON.stringify(openaiErrorBody(status, message, 'gateway_error'))}\n\n`,
     terminator: 'data: [DONE]\n\n',
+    // The adapter is built here, not up front, so the chunks can report the model the
+    // sandbox actually served rather than the alias the caller sent.
     synthesize: (message) => {
+      const adapter = createStreamAdapter({ id, model: message?.model || requestedModel, created });
       const text = (message?.content ?? [])
         .filter((block) => block?.type === 'text')
         .map((block) => block.text)
         .join('');
-      const finish = message?.stop_reason === 'max_tokens' ? 'length' : 'stop';
       return [
         { event: 'chunk', data: adapter.first() },
         { event: 'chunk', data: adapter.delta(text) },
-        { event: 'chunk', data: adapter.last(finish) },
+        { event: 'chunk', data: adapter.last(message?.stop_reason ?? 'end_turn') },
       ];
     },
     fallback: () => [],
@@ -408,19 +409,23 @@ async function handleGatewayApi(req, res, pathname, requestId) {
   if (pathname === '/v1/chat/completions') {
     const parsed = parseMessagesRequest(toAnthropicBody(raw), gatewayLimits());
     const created = Math.floor(Date.now() / 1000);
-    const id = `chatcmpl-${randomToken(12)}`;
+    const id = randomToken(12);
     if (parsed.stream) {
       await runStreaming(req, res, {
         record,
         parsed,
         requestId,
-        wire: openaiWire({ model: parsed.model, id, created }),
+        wire: openaiWire({ requestedModel: parsed.model, id, created }),
       });
       return;
     }
     const outcome = await gateway.run({ record, parsed, requestId });
     rateLimitHeaders(res, outcome.rateLimit);
-    sendJson(res, 200, fromAnthropicMessage(outcome.message, { model: parsed.model, id, created }));
+    sendJson(res, 200, fromAnthropicMessage(outcome.message, {
+      model: outcome.message?.model || parsed.model,
+      id,
+      created,
+    }));
     return;
   }
 

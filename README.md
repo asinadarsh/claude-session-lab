@@ -38,10 +38,55 @@ It is intentionally a **lab**, not a multi-user identity platform or production 
 - **Polished custom UI** with Prepare, Authorize, Exchange, and Connected stages.
 - **Server-side token custody** with no credential-reveal endpoint.
 - **Ephemeral inference sandboxes** under `/dev/shm` when available.
-- **Strict localhost boundary** enforced in code, not only in startup flags.
+- **Strict localhost boundary** for the admin UI, enforced in code, not only in startup flags.
 - **Origin, Host, CSRF, body-size, timeout, and output-size controls**.
+- **Optional gateway mode** that serves your own linked account over an Anthropic- and OpenAI-compatible API.
 - **Zero runtime dependencies** - only Node.js built-ins are used.
-- **Focused tests** for OAuth shape, redaction, refresh handoff, and hung-process cleanup.
+- **Focused tests** for OAuth shape, redaction, refresh handoff, hung-process cleanup, keystore crypto, wire translation, and the live HTTP surface.
+
+## Gateway mode: your subscription as an API
+
+Gateway mode is off by default. When it is on, an account you link is served to **your own** websites and apps behind a key you issue, using the Anthropic Messages wire format and an OpenAI-compatible shim, so existing clients work by changing two settings.
+
+```js
+import Anthropic from '@anthropic-ai/sdk';
+
+const anthropic = new Anthropic({
+  apiKey: 'csl_sk_...',            // issued by this server, not an Anthropic key
+  baseURL: 'https://your-host',    // reverse proxy in front of the gateway
+});
+
+const message = await anthropic.messages.create({
+  model: 'claude-sonnet-5',
+  max_tokens: 1024,
+  messages: [{ role: 'user', content: 'Hello' }],
+});
+```
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/messages` | Anthropic Messages subset, buffered or SSE streaming |
+| `POST /v1/chat/completions` | OpenAI chat-completions subset, buffered or streaming |
+| `GET /v1/models` | Model list for clients that probe it |
+
+Enable it with a master key, then link an account:
+
+```bash
+export SESSION_LAB_GATEWAY=1
+export SESSION_LAB_MASTER_KEY="$(openssl rand -base64 32)"
+npm start
+
+# either issue a key from the admin UI after the PKCE flow,
+# or link the account this machine is already signed in to:
+npm run link-local -- my-website
+```
+
+Read [docs/API.md](docs/API.md) for the request and response contract and [docs/DEPLOY.md](docs/DEPLOY.md) for the systemd unit and the Caddy block that exposes only `/v1/*` while keeping the admin UI on an SSH tunnel.
+
+**What is different from the real Anthropic API.** Conversation history is flattened into a single prompt, so one request costs one model turn no matter how long the thread is. Tool use, `tool_result`, and image URL sources are rejected rather than silently ignored. `max_tokens` is a soft clamp with a 256 floor. Thinking blocks are hidden unless the caller asks for them. Requests are serialized per linked account, because two concurrent runs would both rotate the OAuth refresh token.
+
+> [!IMPORTANT]
+> A subscription is metered per five-hour window and is not a resale license. Link only accounts you own, keep keys to your own apps, and do not sell or share gateway access. Review the applicable service terms before enabling this mode.
 
 ## Architecture
 
@@ -120,9 +165,21 @@ Read the full [security model](docs/SECURITY_MODEL.md) before adapting this code
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SESSION_LAB_PORT` | `3210` | Loopback port, from 1024 through 65535 |
+| `SESSION_LAB_PORT` | `3210` | Listening port, from 1024 through 65535 |
 | `CLAUDE_BINARY` | `claude` | Claude Code executable name or absolute path |
 | `NODE_BINARY` | `node` | Node executable used by `run.sh` |
+| `SESSION_LAB_GATEWAY` | `0` | Enable `/v1/*` and the encrypted keystore |
+| `SESSION_LAB_MASTER_KEY` | none | 32 bytes, base64 or hex; required by gateway mode |
+| `SESSION_LAB_KEYSTORE` | `data/keystore.json` | Encrypted connection store |
+| `SESSION_LAB_HOST` | `127.0.0.1` | Bind address; anything else also needs `SESSION_LAB_ALLOW_PUBLIC_BIND=1` |
+| `SESSION_LAB_CORS_ORIGINS` | none | Comma-separated origins allowed to call `/v1/*` from a browser |
+| `SESSION_LAB_RATE_LIMIT_PER_MINUTE` | `60` | Requests per minute per key |
+| `SESSION_LAB_QUEUE_LIMIT` | `4` | Requests that may wait for one account's lock |
+| `SESSION_LAB_MAX_BODY_KB` | `8192` | Gateway request-body ceiling, sized for base64 images |
+| `SESSION_LAB_MAX_IMAGES` | `6` | Image blocks allowed per request |
+| `SESSION_LAB_REQUEST_TIMEOUT_S` | `600` | Gateway inference deadline |
+
+Full defaults are listed in [docs/DEPLOY.md](docs/DEPLOY.md).
 
 Example:
 
@@ -134,44 +191,55 @@ The application does not load `.env` files. `.env.example` is documentation only
 
 ## API surface
 
-| Route | Method | Purpose |
-|---|---|---|
-| `/api/health` | GET | Local health check |
-| `/api/auth/status` | GET | Safe connection metadata and CSRF bootstrap |
-| `/api/auth/start` | POST | Create a one-time PKCE transaction |
-| `/api/auth/complete` | POST | Validate and exchange the manual code |
-| `/api/chat` | POST | Run one isolated, tool-disabled inference |
-| `/api/auth/disconnect` | POST | Clear memory and attempt refresh-token revocation |
+| Route | Method | Auth | Purpose |
+|---|---|---|---|
+| `/api/health` | GET | none | Health check |
+| `/api/auth/status` | GET | cookie | Safe connection metadata and CSRF bootstrap |
+| `/api/auth/start` | POST | cookie + CSRF | Create a one-time PKCE transaction |
+| `/api/auth/complete` | POST | cookie + CSRF | Validate and exchange the manual code |
+| `/api/chat` | POST | cookie + CSRF | Run one isolated, tool-disabled inference |
+| `/api/keys/create` | POST | cookie + CSRF | Link the connected account and issue one key |
+| `/api/keys/revoke` | POST | cookie + CSRF | Revoke a key and its stored token |
+| `/api/auth/disconnect` | POST | cookie + CSRF | Clear memory and attempt refresh-token revocation |
+| `/v1/messages` | POST | gateway key | Anthropic Messages, buffered or streaming |
+| `/v1/chat/completions` | POST | gateway key | OpenAI chat completions, buffered or streaming |
+| `/v1/models` | GET | gateway key | Model list |
 
-There is deliberately no route that returns, exports, or displays credentials.
+Every `/api/*` route requires the localhost Host allowlist; only `/v1/*` is meant to be proxied publicly. There is deliberately no route that returns, exports, or displays credentials, and a gateway key is shown exactly once at creation.
 
 ## Tests
 
 ```bash
-npm test       # 13 focused tests
+npm test       # 74 tests
 npm run check  # JavaScript syntax checks
 ```
 
-The suite includes a fake Claude executable that updates placeholder credentials and another that hangs until the process-group timeout kills it. No real account is needed for automated tests.
+The suite uses fake `claude` executables: one echoes a scripted stream-json conversation, one hangs until the process-group timeout kills it, and one fails if a second run overlaps, which is how per-account serialization is asserted. `test/gateway.test.mjs` boots the real server against a seeded keystore and exercises the full HTTP surface. No real account is needed for automated tests.
 
 ## Known limitations
 
 - The OAuth contract is private and version-sensitive; see [protocol notes](docs/PROTOCOL_NOTES.md).
-- Tokens are intentionally nonpersistent. Restarting the server requires authorization again.
-- This is a single-process, in-memory demo, not a multi-tenant service.
-- The UI assumes access through localhost or an SSH tunnel; do not publish the port.
+- In lab mode tokens are never persisted, so restarting requires authorization again. Gateway mode persists them encrypted, and losing the master key makes them unrecoverable by design.
+- Single process, single owner. This is not a multi-tenant platform: there is no billing, quota, or per-caller isolation beyond the key.
+- Requests are serialized per linked account, so throughput is one inference at a time.
+- The admin UI assumes localhost or an SSH tunnel; do not publish its port.
 - Automated tests do not call Anthropic or require a Claude subscription.
 
 ## Project structure
 
 ```text
 public/                  Browser UI
-src/server.mjs           HTTP/session boundary
+src/server.mjs           HTTP/session boundary and route table
 src/oauth.mjs            PKCE URL, exchange, profile, revoke
+src/keystore.mjs         Encrypted connection store and API keys
+src/gateway.mjs          Key auth, per-account locking, rate limits
+src/messages.mjs         Anthropic request/response and SSE translation
+src/openai.mjs           OpenAI compatibility shim
 src/claude.mjs           Ephemeral Claude Code runner
 src/security.mjs         State, cookies, masking, redaction
+scripts/link-local.mjs   Link the account this machine already uses
 test/                    Node test suite
-docs/                    Protocol and threat-model notes
+docs/                    API, deployment, protocol, threat model
 design-system/           UI design source of truth
 ```
 

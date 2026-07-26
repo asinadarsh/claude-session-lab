@@ -278,6 +278,8 @@ test('gateway surface', async (t) => {
       assert.match(chunks[1].choices[0].delta.content, /^echo:/);
       assert.equal(chunks.at(-1).choices[0].finish_reason, 'stop');
       assert.ok(chunks.every((chunk) => chunk.object === 'chat.completion.chunk' && chunk.id === chunks[0].id));
+      assert.match(chunks[0].id, /^chatcmpl-[A-Za-z0-9_-]+$/, 'id must carry exactly one chatcmpl- prefix');
+      assert.equal(chunks[0].model, 'claude-sonnet-5', 'chunks report the served model, not the alias');
     });
 
     await t.test('rejects tool use with an OpenAI error envelope', async () => {

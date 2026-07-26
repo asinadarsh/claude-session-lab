@@ -140,6 +140,16 @@ ssh -N -L 3210:127.0.0.1:3210 you@your-vps
 
 then open <http://127.0.0.1:3210> locally to link the account and create keys.
 
+If the service user is already signed in to Claude Code on this host, you can skip the browser
+flow entirely and issue a key from the command line:
+
+```bash
+sudo -u csl -H bash -c 'cd ~/claude-session-lab && set -a && . /etc/claude-session-lab/env && set +a && npm run link-local -- my-website'
+```
+
+That copies the refresh token Claude Code also uses on this host, so a refresh by either side can
+force the other to sign in again. Link a separate account when that matters.
+
 ## 5. Firewall
 
 Do not open the app port. The server only binds loopback, but keep the firewall in agreement:
@@ -185,7 +195,7 @@ Create a key in the admin UI over the tunnel, copy the `csl_sk_...` value (shown
 curl https://gateway.example.com/v1/messages \
   -H "x-api-key: csl_sk_..." \
   -H "content-type: application/json" \
-  -d '{"model":"claude-sonnet-4-5","max_tokens":256,"messages":[{"role":"user","content":"Reply with the word: ready"}]}'
+  -d '{"model":"claude-sonnet-5","max_tokens":256,"messages":[{"role":"user","content":"Reply with the word: ready"}]}'
 ```
 
 Streaming:
@@ -194,7 +204,7 @@ Streaming:
 curl -N https://gateway.example.com/v1/messages \
   -H "x-api-key: csl_sk_..." \
   -H "content-type: application/json" \
-  -d '{"model":"claude-sonnet-4-5","max_tokens":256,"stream":true,"messages":[{"role":"user","content":"Count to five."}]}'
+  -d '{"model":"claude-sonnet-5","max_tokens":256,"stream":true,"messages":[{"role":"user","content":"Count to five."}]}'
 ```
 
 You should see `event: message_start` through `event: message_stop`, and the first curl should return a `message` object with `"ready"` in its content.

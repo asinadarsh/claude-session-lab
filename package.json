@@ -28,6 +28,7 @@
   },
   "scripts": {
     "start": "node src/server.mjs",
+    "link-local": "node scripts/link-local.mjs",
     "check": "node --check src/server.mjs && node --check public/app.js",
     "test": "node --test"
   }
