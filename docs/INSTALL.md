@@ -290,7 +290,11 @@ For the current session only:
 
 ```powershell
 $env:SESSION_LAB_GATEWAY = "1"
-$env:SESSION_LAB_MASTER_KEY = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+# Get-Random is not a cryptographic RNG - use the platform CSPRNG for a key that
+# protects an OAuth token.
+$bytes = [byte[]]::new(32)
+[System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+$env:SESSION_LAB_MASTER_KEY = [Convert]::ToBase64String($bytes)
 $env:SESSION_LAB_MASTER_KEY        # save this now
 ```
 

@@ -586,10 +586,10 @@ async function main(argv = process.argv) {
         credentials = null;
       }
       if (credentials && credentials.source === 'macOS Keychain') {
-        // scripts/link-local.mjs reads the credentials FILE only; it cannot open the Keychain.
-        say('[!] Your credentials live in the macOS login Keychain, which scripts/link-local.mjs');
-        say('    cannot read (it only reads ~/.claude/.credentials.json). Use option 2 instead.');
-        credentials = null;
+        // link-local resolves credentials through the same platform helper, so the Keychain
+        // works there too; macOS may raise one access prompt when the child reads it.
+        say('[!] Your credentials are in the macOS login Keychain. Approve the access prompt');
+        say('    if macOS shows one; otherwise this falls back to the browser flow.');
       }
       if (credentials) {
         say(`[ok] Local credentials found in ${credentials.source}.`);
