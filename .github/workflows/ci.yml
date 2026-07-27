@@ -44,3 +44,6 @@ jobs:
 
       - name: Check syntax
         run: npm run check
+
+      - name: Installer help works on this OS
+        run: node scripts/setup.mjs --help

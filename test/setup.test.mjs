@@ -149,11 +149,16 @@ test('renderServiceFile gives Windows a launcher plus a schtasks onlogon command
     port: 3210,
   });
 
-  assert.match(service.path, /start-gateway\.cmd$/);
+  assert.equal(service.path, 'C:\\Users\\dev\\claude-session-lab\\data\\start-gateway.cmd');
   assert.ok(service.contents.includes('"C:\\Program Files\\nodejs\\node.exe"'), 'quoted absolute node path');
-  assert.ok(service.contents.includes('--env-file-if-exists='));
-  assert.ok(service.contents.includes('server.mjs'));
+  assert.ok(
+    service.contents.includes('"--env-file-if-exists=C:\\Users\\dev\\claude-session-lab\\data\\gateway.env"'),
+    'the env file must be a quoted Windows path',
+  );
+  assert.ok(service.contents.includes('"C:\\Users\\dev\\claude-session-lab\\src\\server.mjs"'));
   assert.ok(service.contents.startsWith('@echo off'));
+  assert.ok(service.contents.includes('\r\n'), 'a .cmd file needs CRLF line endings');
+  assert.ok(!service.contents.includes('/claude-session-lab'), 'no host separators leaked in');
   const create = service.commands.find((command) => command.startsWith('schtasks /create'));
   assert.ok(create, 'a schtasks /create command is required');
   assert.match(create, /\/sc onlogon/);
@@ -184,9 +189,11 @@ test('claudeCandidates puts CLAUDE_BINARY first and adds per-OS defaults', () =>
     env: { Path: 'C:\\bin', APPDATA: 'C:\\Users\\dev\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\dev\\AppData\\Local' },
     home: 'C:\\Users\\dev',
   });
-  assert.ok(win.some((candidate) => candidate.endsWith('claude.cmd')));
-  assert.ok(win.some((candidate) => candidate.includes('AppData\\Roaming') || candidate.includes('AppData/Roaming')));
-  assert.ok(win.every((candidate) => /\.(cmd|exe|bat)$/.test(candidate)));
+  assert.ok(win.includes('C:\\bin\\claude.cmd'));
+  assert.ok(win.includes('C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd'), 'the npm -g shim must be checked');
+  assert.ok(win.includes('C:\\Users\\dev\\AppData\\Local\\Programs\\claude\\claude.exe'));
+  assert.ok(win.every((candidate) => /\.(cmd|exe|bat)$/.test(candidate)), 'Node cannot spawn an extensionless shim');
+  assert.ok(win.every((candidate) => !candidate.includes('/')), 'no host separators leaked in');
 });
 
 test('parseEnvFile ignores comments and blank lines', () => {

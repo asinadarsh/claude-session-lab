@@ -14,6 +14,7 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-8b5cf6.svg"></a>
   <img alt="Node.js 24+" src="https://img.shields.io/badge/Node.js-24%2B-5ee7b7.svg">
   <img alt="Zero runtime dependencies" src="https://img.shields.io/badge/runtime_dependencies-0-6366f1.svg">
+  <img alt="Linux, macOS, Windows" src="https://img.shields.io/badge/tested_on-Linux_%7C_macOS_%7C_Windows-38bdf8.svg">
   <a href="https://github.com/asinadarsh/claude-session-lab/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/asinadarsh/claude-session-lab?style=social"></a>
 </p>
 
@@ -45,43 +46,26 @@ Two settings changed. Everything else in your app stays the same. The official A
 
 ## Quickstart
 
-Five minutes, five steps. Developed and tested on Linux and WSL.
-
-On macOS the server itself runs fine (the sandbox falls back from `/dev/shm` to `TMPDIR`), but step 3 below does not: Claude Code stores its credentials in the login Keychain there, not in `~/.claude/.credentials.json`. Skip to [the browser sign-in flow](#managing-keys) instead, or point `CLAUDE_CREDENTIALS` at a file holding the same JSON.
-
-**You need:** Node.js 24+, the `claude` CLI installed and signed in (`claude` then `/login`), and a Claude subscription you own.
+Runs on **Ubuntu/Linux, macOS and Windows**. You need Node.js 24+, a Claude subscription you own,
+and the `claude` CLI signed in (install it, run `claude`, then `/login`).
 
 ```bash
-# 1. Get the code and check it runs
 git clone https://github.com/asinadarsh/claude-session-lab.git
 cd claude-session-lab
-npm test
+npm run setup
+```
 
-# 2. Turn on gateway mode with a master key (this encrypts your stored token)
-export SESSION_LAB_GATEWAY=1
-export SESSION_LAB_MASTER_KEY="$(openssl rand -base64 32)"
+`npm run setup` is an interactive installer. It detects your OS and locates the `claude` CLI,
+generates and shows the master key that encrypts your stored token, links your account, issues
+your first API key, and offers to keep the gateway running as a background service. Then:
 
-# Save this value now — it is the one secret with no recovery path
-echo "$SESSION_LAB_MASTER_KEY"
-
-# 3. Link the account this machine is already signed in to, and get your key
-npm run link-local -- my-app
-
-# 4. Start the server
+```bash
 npm start
 ```
 
-Step 3 prints your key once:
-
-```
-Linked ed********@gmail.com (max) as "my-app".
-
-Gateway key (shown once, store it now):
-csl_sk_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-```
+Call it with the key setup printed:
 
 ```bash
-# 5. Call it (new terminal)
 curl http://127.0.0.1:3210/v1/messages \
   -H "x-api-key: csl_sk_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" \
   -H "content-type: application/json" \
@@ -96,56 +80,48 @@ curl http://127.0.0.1:3210/v1/messages \
 
 That's it. Point your app at `http://127.0.0.1:3210` with that key.
 
-> [!TIP]
-> **Put the master key in your password manager before you go further** (`echo "$SESSION_LAB_MASTER_KEY"` prints it again). It encrypts the stored token: lose it and the server refuses to start against the existing keystore with `KEYSTORE_UNREADABLE`, and you have to delete `data/keystore.json`, re-link, and re-key every app.
->
-> `export` also only lasts for that one terminal. Put the master key and `SESSION_LAB_GATEWAY=1` in your shell profile or in the service file below, or your next `npm start` comes up with the gateway disabled.
+> [!IMPORTANT]
+> Save the master key that setup prints. It encrypts your stored token, so losing it means the
+> server refuses to start with `KEYSTORE_UNREADABLE` and you have to re-link and re-key every app.
+> Setup keeps a copy in `data/gateway.env` (mode 0600) and nowhere else.
+
+Per-OS instructions, including Windows PowerShell and the macOS Keychain prompt, are in
+**[docs/INSTALL.md](docs/INSTALL.md)**. `npm run setup --yes` takes every default without prompting.
+
+<details>
+<summary><b>Prefer to do it by hand?</b></summary>
+
+The installer only wraps these steps:
+
+```bash
+export SESSION_LAB_GATEWAY=1
+export SESSION_LAB_MASTER_KEY="$(openssl rand -base64 32)"
+echo "$SESSION_LAB_MASTER_KEY"          # save this: there is no recovery path
+
+npm run link-local -- my-app            # prints one csl_sk_... key
+npm start
+```
+
+On Windows use `$env:SESSION_LAB_GATEWAY = "1"` and so on; see
+[docs/INSTALL.md](docs/INSTALL.md#windows). Link before starting the server, because the keystore
+takes an exclusive lock. `export` lasts only for that terminal, which is why setup writes
+`data/gateway.env` instead.
+</details>
 
 ## Keep it running
 
-`npm start` dies when you close the terminal. For everyday personal use, a user-level systemd
-service is the least fuss — no root, and it comes back after a crash or reboot.
+`npm start` dies when you close the terminal. `npm run setup` offers to fix that and writes the
+right thing for your OS; these are what it generates, if you would rather do it yourself:
 
-**Stop the foreground `npm start` first** (Ctrl-C). Only one process can hold the keystore and the
-port, so the service will not start while it is running.
+| OS | Mechanism | Notes |
+|---|---|---|
+| Linux | `systemd --user` unit in `~/.config/systemd/user/` | Needs `loginctl enable-linger "$USER"` to survive logout, and an **absolute** Node path — the user manager never sees an nvm/fnm `PATH` |
+| macOS | launchd agent in `~/Library/LaunchAgents/` | `launchctl load -w <plist>`; `launchctl unload` stops it |
+| Windows | `schtasks /sc onlogon` running a small `.cmd` launcher | There is no service wrapper here; closing the terminal otherwise stops the server |
 
-The unit needs an absolute path to Node, because the systemd user manager does not inherit your
-shell's `PATH` — an nvm, fnm, volta or asdf install is invisible to it. This generates the unit
-with the right path filled in:
-
-```bash
-mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/claude-session-lab.service <<EOF
-[Unit]
-Description=Claude Session Lab gateway
-
-[Service]
-WorkingDirectory=$(pwd)
-Environment=SESSION_LAB_GATEWAY=1
-Environment=SESSION_LAB_MASTER_KEY=$SESSION_LAB_MASTER_KEY
-Environment=CLAUDE_BINARY=$(command -v claude)
-ExecStart=$(command -v node) src/server.mjs
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-EOF
-
-chmod 600 ~/.config/systemd/user/claude-session-lab.service   # it holds your master key
-systemctl --user daemon-reload
-systemctl --user enable --now claude-session-lab
-loginctl enable-linger "$USER"        # keep it running after you log out
-
-systemctl --user status claude-session-lab
-journalctl --user -u claude-session-lab -f
-```
-
-Run that from inside the clone, in the same terminal where the master key is still exported, so
-the paths and the key are substituted for you. Check the result with
-`cat ~/.config/systemd/user/claude-session-lab.service` before enabling it.
-
-Only one process may hold the keystore at a time, so stop the service before running
-`link-local` again — or just use the browser UI, which works while it runs.
+Stop the service before running `link-local` again — only one process may hold the keystore — or
+use the browser UI, which works while it runs. Step-by-step commands per OS are in
+**[docs/INSTALL.md](docs/INSTALL.md)**.
 
 For a public, multi-app deployment behind a domain, use the hardened root-level unit in
 **[docs/DEPLOY.md](docs/DEPLOY.md)** instead: dedicated service user, filesystem protections, and

@@ -9,12 +9,12 @@ import { constants as fsConstants } from 'node:fs';
 import { access, chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import path, { dirname, isAbsolute, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { platformLabel, readLocalClaudeCredentials, resolveClaudeCommand } from '../src/platform.mjs';
 
-const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '');
 const MIN_NODE_MAJOR = 24;
 const SERVICE_NAME = 'claude-session-lab';
 const LAUNCHD_LABEL = 'com.claude-session-lab.gateway';
@@ -90,6 +90,12 @@ export function extractApiKey(output) {
   return match ? match[0] : null;
 }
 
+// Paths rendered FOR a platform must use that platform's separator, not the host's: a systemd
+// unit path built on Windows with the host separator comes out as \home\you\... and is wrong.
+function pathFor(platform) {
+  return platform === 'win32' ? path.win32 : path.posix;
+}
+
 /** Ordered places the claude CLI is plausibly installed, most explicit first. */
 export function claudeCandidates({ platform = process.platform, env = process.env, home = homedir() } = {}) {
   const out = [];
@@ -97,21 +103,22 @@ export function claudeCandidates({ platform = process.platform, env = process.en
     if (candidate && !out.includes(candidate)) out.push(candidate);
   };
   if (env.CLAUDE_BINARY) push(env.CLAUDE_BINARY);
+  const target = pathFor(platform);
   const names = platform === 'win32' ? ['claude.cmd', 'claude.exe', 'claude.bat'] : ['claude'];
   const separator = platform === 'win32' ? ';' : ':';
   for (const dir of String(env.PATH ?? env.Path ?? '').split(separator).filter(Boolean)) {
-    for (const name of names) push(join(dir, name));
+    for (const name of names) push(target.join(dir, name));
   }
   if (platform === 'win32') {
-    if (env.APPDATA) push(join(env.APPDATA, 'npm', 'claude.cmd'));          // npm -g shim
+    if (env.APPDATA) push(target.join(env.APPDATA, 'npm', 'claude.cmd'));          // npm -g shim
     if (env.LOCALAPPDATA) {
-      push(join(env.LOCALAPPDATA, 'Programs', 'claude', 'claude.exe'));
-      push(join(env.LOCALAPPDATA, 'Programs', 'claude-code', 'claude.exe'));
+      push(target.join(env.LOCALAPPDATA, 'Programs', 'claude', 'claude.exe'));
+      push(target.join(env.LOCALAPPDATA, 'Programs', 'claude-code', 'claude.exe'));
     }
-    push(join(home, '.local', 'bin', 'claude.exe'));
+    push(target.join(home, '.local', 'bin', 'claude.exe'));
   } else {
-    push(join(home, '.local', 'bin', 'claude'));            // official install script
-    push(join(home, '.claude', 'local', 'claude'));         // `claude migrate-installer`
+    push(target.join(home, '.local', 'bin', 'claude'));            // official install script
+    push(target.join(home, '.claude', 'local', 'claude'));         // `claude migrate-installer`
     if (platform === 'darwin') push('/opt/homebrew/bin/claude');
     push('/usr/local/bin/claude');
     push('/usr/bin/claude');
@@ -123,15 +130,11 @@ function xmlEscape(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function serverArgs(repoRoot, envFile) {
-  return [`--env-file-if-exists=${envFile}`, join(repoRoot, 'src', 'server.mjs')];
+function serverArgs(repoRoot, envFile, target = path) {
+  return [`--env-file-if-exists=${envFile}`, target.join(repoRoot, 'src', 'server.mjs')];
 }
 
-/**
- * Renders the per-OS "keep it running" file. Returns null for platforms we will not guess at.
- * `path.join` follows the HOST separator, so win32 output rendered on Linux shows `/`;
- * the content markers are what matter and a real Windows run produces backslashes.
- */
+/** Renders the per-OS "keep it running" file. Returns null for platforms we will not guess at. */
 export function renderServiceFile({
   platform = process.platform,
   execPath = process.execPath,
@@ -139,15 +142,16 @@ export function renderServiceFile({
   home = homedir(),
   port = DEFAULT_PORT,
 } = {}) {
+  const target = pathFor(platform);
   const root = repoRoot.replace(/[\\/]$/, '');
-  const envFile = join(root, 'data', 'gateway.env');
-  const args = serverArgs(root, envFile);
+  const envFile = target.join(root, 'data', 'gateway.env');
+  const args = serverArgs(root, envFile, target);
 
   if (platform === 'linux') {
     const quoted = [execPath, ...args].map((part) => `"${part}"`).join(' ');
     return {
       kind: 'systemd --user unit',
-      path: join(home, '.config', 'systemd', 'user', `${SERVICE_NAME}.service`),
+      path: target.join(home, '.config', 'systemd', 'user', `${SERVICE_NAME}.service`),
       contents: [
         '[Unit]',
         `Description=Claude Session Lab gateway (127.0.0.1:${port})`,
@@ -177,8 +181,8 @@ export function renderServiceFile({
   }
 
   if (platform === 'darwin') {
-    const plistPath = join(home, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
-    const logDir = join(root, 'logs');
+    const plistPath = target.join(home, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
+    const logDir = target.join(root, 'logs');
     return {
       kind: 'launchd agent',
       path: plistPath,
@@ -201,9 +205,9 @@ export function renderServiceFile({
         '  <key>KeepAlive</key>',
         '  <true/>',
         '  <key>StandardOutPath</key>',
-        `  <string>${xmlEscape(join(logDir, 'gateway.out.log'))}</string>`,
+        `  <string>${xmlEscape(target.join(logDir, 'gateway.out.log'))}</string>`,
         '  <key>StandardErrorPath</key>',
-        `  <string>${xmlEscape(join(logDir, 'gateway.err.log'))}</string>`,
+        `  <string>${xmlEscape(target.join(logDir, 'gateway.err.log'))}</string>`,
         '</dict>',
         '</plist>',
         '',
@@ -211,14 +215,14 @@ export function renderServiceFile({
       commands: [
         `launchctl load -w ${plistPath}`,
         `launchctl unload ${plistPath}   # stop it`,
-        `tail -f ${join(logDir, 'gateway.err.log')}   # logs`,
+        `tail -f ${target.join(logDir, 'gateway.err.log')}   # logs`,
       ],
       note: 'launchd needs the log directory to exist; setup creates logs/ when it writes the plist.',
     };
   }
 
   if (platform === 'win32') {
-    const launcher = join(root, 'data', 'start-gateway.cmd');
+    const launcher = target.join(root, 'data', 'start-gateway.cmd');
     return {
       kind: 'logon scheduled task (no service wrapper)',
       path: launcher,
@@ -267,10 +271,27 @@ function createPrompter({ auto = false } = {}) {
   if (auto) {
     return { auto: true, ask: async (_q, fallback = '') => fallback, confirm: async (_q, fallback = false) => fallback, close() {} };
   }
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: Boolean(process.stdin.isTTY) });
+  // Piped stdin arrives as one burst and readline fires every 'line' immediately, so the
+  // lines are queued here; rl.question() alone would drop the ones nobody was awaiting yet.
+  const queued = [];
+  let waiting = null;
   let closed = false;
   let announced = false;
-  rl.on('close', () => { closed = true; });
+  const handOff = (line) => {
+    if (!waiting) return false;
+    const deliver = waiting;
+    waiting = null;
+    deliver(line);
+    return true;
+  };
+  rl.on('line', (line) => {
+    if (!handOff(line)) queued.push(line);
+  });
+  rl.on('close', () => {
+    closed = true;
+    handOff(null);
+  });
   rl.on('SIGINT', () => {
     say('');
     say('[!] cancelled.');
@@ -281,14 +302,18 @@ function createPrompter({ auto = false } = {}) {
   const prompter = {
     auto: false,
     async ask(question, fallback = '') {
-      if (closed) return fallback;
-      const suffix = fallback === '' ? '' : ` [${fallback}]`;
-      const answer = await Promise.race([
-        rl.question(`${question}${suffix} `).catch(() => null),
-        new Promise((done) => rl.once('close', () => done(null))),
-      ]);
+      const prompt = `${question}${fallback === '' ? '' : ` [${fallback}]`} `;
+      let answer;
+      if (queued.length > 0) {
+        answer = queued.shift();
+        process.stdout.write(`${prompt}${answer}\n`);
+      } else if (closed) {
+        answer = null;
+      } else {
+        process.stdout.write(prompt);
+        answer = await new Promise((deliver) => { waiting = deliver; });
+      }
       if (answer === null) {
-        closed = true;
         if (!announced) {
           announced = true;
           say('');
@@ -625,8 +650,8 @@ async function main(argv = process.argv) {
     say('Done. ---------------------------------------------------------------');
     say('Start it:');
     say(`  cd ${REPO_ROOT}`);
-    say(`  ${startCommand}`);
-    say('  (npm start does not read the env file; use the line above or export the vars.)');
+    say('  npm start');
+    say(`  (that is: ${startCommand} - the flag is what loads the config above.)`);
     say('');
     say('Prove it works:');
     say(`  ${curlCommand({ platform, port, apiKey })}`);
