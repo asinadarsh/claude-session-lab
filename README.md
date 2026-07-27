@@ -403,7 +403,7 @@ Everything is an environment variable; the app deliberately does not read `.env`
 | `SESSION_LAB_REQUEST_TIMEOUT_S` | `600` | Inference deadline |
 | `SESSION_LAB_DEFAULT_MAX_TOKENS` | `4096` | Used when a request omits `max_tokens` |
 
-The remaining limits (`SESSION_LAB_MAX_PROMPT_CHARS`, `SESSION_LAB_MAX_MESSAGES`, `SESSION_LAB_MAX_IMAGE_KB`, `SESSION_LAB_MAX_CONNECTIONS`) are listed with their defaults in [`.env.example`](.env.example). `CLAUDE_CREDENTIALS` overrides where `link-local` reads Claude Code's credential file.
+The remaining limits (`SESSION_LAB_MAX_PROMPT_CHARS`, `SESSION_LAB_MAX_MESSAGES`, `SESSION_LAB_MAX_IMAGE_KB`, `SESSION_LAB_MAX_CONNECTIONS`) are listed with their defaults in [`.env.example`](.env.example). `CLAUDE_CREDENTIALS` overrides where `link-local` reads Claude Code's credential file, and on macOS `CLAUDE_KEYCHAIN_SERVICE` names the Keychain entry to read instead of the built-in candidates.
 
 ## Lab mode
 

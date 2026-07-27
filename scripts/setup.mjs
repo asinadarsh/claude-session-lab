@@ -585,7 +585,7 @@ async function main(argv = process.argv) {
         say(`[!] ${credentials.source} has no claudeAiOauth.accessToken. Run \`claude\` and sign in.`);
         credentials = null;
       }
-      if (credentials && credentials.source === 'macOS Keychain') {
+      if (credentials && credentials.sourceKind === 'keychain') {
         // link-local resolves credentials through the same platform helper, so the Keychain
         // works there too; macOS may raise one access prompt when the child reads it.
         say('[!] Your credentials are in the macOS login Keychain. Approve the access prompt');

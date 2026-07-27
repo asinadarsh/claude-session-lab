@@ -47,3 +47,11 @@ jobs:
 
       - name: Installer help works on this OS
         run: node scripts/setup.mjs --help
+
+      # Verifies the macOS Keychain code against the real `security` binary. Opt-in because it
+      # writes to the login Keychain; the test cleans up after itself.
+      - name: macOS Keychain integration
+        if: runner.os == 'macOS'
+        env:
+          CSL_KEYCHAIN_TEST: '1'
+        run: node --test test/keychain.macos.test.mjs

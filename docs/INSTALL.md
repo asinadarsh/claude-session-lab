@@ -206,6 +206,18 @@ alternatives:
   it never touches the local CLI's credentials, and can link a different account;
 - set `CLAUDE_CREDENTIALS` to a file containing the same JSON (a `claudeAiOauth` object).
 
+The entry name is not a documented contract, so several candidates are tried in order
+(`Claude Code-credentials`, `Claude Code`, `claude-code-credentials`). If your install uses
+another, name it explicitly and skip the guessing:
+
+```bash
+security dump-keychain | grep -i -A1 claude    # find the service name
+CLAUDE_KEYCHAIN_SERVICE="whatever it is" npm run link-local -- my-app
+```
+
+Both the plain and hex-encoded payload forms are handled, and the failure message lists every
+name that was tried.
+
 ### Keep it running
 
 `~/Library/LaunchAgents/com.example.claude-session-lab.plist` — adapt the paths, they are examples:

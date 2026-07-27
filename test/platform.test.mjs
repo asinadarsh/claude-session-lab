@@ -179,7 +179,8 @@ test('macOS reads credentials from the Keychain before touching the filesystem',
     spawnImpl: fakeKeychain(JSON.stringify({ claudeAiOauth: oauth })),
     readFileImpl: async () => { fileRead = true; return '{}'; },
   });
-  assert.equal(result.source, 'macOS Keychain');
+  assert.equal(result.sourceKind, 'keychain');
+  assert.match(result.source, /Keychain/);
   assert.equal(result.oauth.accessToken, 'from-keychain');
   assert.equal(fileRead, false, 'the Keychain hit must short-circuit the file read');
 });
@@ -192,6 +193,7 @@ test('macOS falls back to the credentials file when the Keychain has nothing', a
     spawnImpl: fakeKeychain('', { code: 44 }),
     readFileImpl: async () => JSON.stringify({ claudeAiOauth: { accessToken: 'from-file' } }),
   });
+  assert.equal(result.sourceKind, 'file');
   assert.match(result.source, /\.credentials\.json$/);
   assert.equal(result.oauth.accessToken, 'from-file');
 });
@@ -222,7 +224,7 @@ test('a failure names every place that was tried and how to fix it', async () =>
       readFileImpl: async () => { const error = new Error('nope'); error.code = 'ENOENT'; throw error; },
     }),
     (error) => error.code === 'LOCAL_CREDENTIALS_UNAVAILABLE'
-      && /Keychain/.test(error.publicMessage)
+      && /no readable Keychain entry/.test(error.publicMessage)
       && /\.credentials\.json/.test(error.publicMessage),
   );
 

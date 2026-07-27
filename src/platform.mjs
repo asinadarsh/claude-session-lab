@@ -192,6 +192,44 @@ function runCapture(spawnImpl, command, args) {
   });
 }
 
+// Which Keychain entry holds the CLI's credentials is not a documented contract, so rather than
+// betting on one name these are tried in order. CLAUDE_KEYCHAIN_SERVICE overrides the list for
+// anyone whose install uses something else again.
+export const KEYCHAIN_SERVICE_CANDIDATES = Object.freeze([
+  'Claude Code-credentials',
+  'Claude Code',
+  'claude-code-credentials',
+]);
+
+export function keychainServices(env = process.env) {
+  const override = env.CLAUDE_KEYCHAIN_SERVICE;
+  if (typeof override === 'string' && override.trim()) return [override.trim()];
+  return [...KEYCHAIN_SERVICE_CANDIDATES];
+}
+
+/**
+ * Turns whatever `security -w` printed into an OAuth object.
+ * Two shapes are tolerated because neither is guaranteed: the payload may be the full
+ * `{claudeAiOauth: {...}}` wrapper or the bare object, and `security` prints hex rather than text
+ * when the stored bytes are not printable.
+ */
+export function decodeKeychainPayload(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  const forms = [text];
+  if (/^[0-9a-fA-F]+$/.test(text) && text.length % 2 === 0) {
+    forms.push(Buffer.from(text, 'hex').toString('utf8'));
+  }
+  for (const form of forms) {
+    try {
+      const parsed = JSON.parse(form);
+      const oauth = parsed?.claudeAiOauth ?? parsed;
+      if (oauth && typeof oauth.accessToken === 'string' && oauth.accessToken) return oauth;
+    } catch {}
+  }
+  return null;
+}
+
 /**
  * Reads the credentials of the Claude CLI signed in on this machine.
  * macOS keeps them in the login Keychain rather than on disk, so that is tried first there.
@@ -208,30 +246,31 @@ export async function readLocalClaudeCredentials({
   const filePath = defaultCredentialsPath({ platform, env, home });
 
   if (platform === 'darwin' && !explicit) {
-    const keychain = await runCapture(spawnImpl, 'security', [
-      'find-generic-password', '-s', 'Claude Code-credentials', '-w',
-    ]);
-    if (keychain.ok && keychain.stdout.trim()) {
-      try {
-        return { source: 'macOS Keychain', oauth: JSON.parse(keychain.stdout.trim())?.claudeAiOauth };
-      } catch {
-        attempts.push('the macOS Keychain entry "Claude Code-credentials" held data this version cannot parse');
+    const services = keychainServices(env);
+    for (const service of services) {
+      const keychain = await runCapture(spawnImpl, 'security', [
+        'find-generic-password', '-s', service, '-w',
+      ]);
+      if (!keychain.ok || !keychain.stdout.trim()) continue;
+      const oauth = decodeKeychainPayload(keychain.stdout);
+      if (oauth) {
+        return { source: `macOS Keychain (service "${service}")`, sourceKind: 'keychain', oauth };
       }
-    } else {
-      attempts.push('the macOS Keychain has no readable "Claude Code-credentials" entry');
+      attempts.push(`the Keychain entry "${service}" held data this version could not parse`);
     }
+    attempts.push(`no readable Keychain entry among ${services.map((name) => `"${name}"`).join(', ')}`);
   }
 
   try {
     const raw = await readFileImpl(filePath, 'utf8');
-    return { source: filePath, oauth: JSON.parse(raw)?.claudeAiOauth };
+    return { source: filePath, sourceKind: 'file', oauth: JSON.parse(raw)?.claudeAiOauth };
   } catch (error) {
     attempts.push(`${filePath} could not be read (${error.code ?? 'unreadable'})`);
   }
 
   const detail = attempts.join('; ');
   const hint = platform === 'darwin'
-    ? 'On macOS the CLI stores credentials in the login Keychain; approve the access prompt, or link through the browser flow instead.'
+    ? 'On macOS the CLI stores credentials in the login Keychain; approve the access prompt, set CLAUDE_KEYCHAIN_SERVICE to the entry name, or link through the browser flow instead.'
     : 'Run `claude` and sign in first, or set CLAUDE_CREDENTIALS to the file holding them.';
   throw new PublicError(500, 'LOCAL_CREDENTIALS_UNAVAILABLE', `${detail}. ${hint}`);
 }
