@@ -27,9 +27,10 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "start": "node src/server.mjs",
-    "link-local": "node scripts/link-local.mjs",
-    "check": "node --check src/server.mjs && node --check src/keystore.mjs && node --check src/messages.mjs && node --check src/openai.mjs && node --check src/gateway.mjs && node --check src/claude.mjs && node --check src/oauth.mjs && node --check src/security.mjs && node --check src/config.mjs && node --check scripts/link-local.mjs && node --check public/app.js",
+    "setup": "node --env-file-if-exists=data/gateway.env scripts/setup.mjs",
+    "start": "node --env-file-if-exists=data/gateway.env src/server.mjs",
+    "link-local": "node --env-file-if-exists=data/gateway.env scripts/link-local.mjs",
+    "check": "node --check src/claude.mjs && node --check src/config.mjs && node --check src/gateway.mjs && node --check src/keystore.mjs && node --check src/messages.mjs && node --check src/oauth.mjs && node --check src/openai.mjs && node --check src/platform.mjs && node --check src/security.mjs && node --check src/server.mjs && node --check scripts/link-local.mjs && node --check public/app.js",
     "test": "node --test"
   }
 }

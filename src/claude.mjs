@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process';
-import { constants as fsConstants, rmSync } from 'node:fs';
-import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { rmSync } from 'node:fs';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { PublicError } from './security.mjs';
+import { resolveClaudeCommand, sandboxBase, spawnDetached, terminateTree } from './platform.mjs';
 
 const ONE_MIB = 1024 * 1024;
 
@@ -47,30 +47,8 @@ export function buildUserLine(text) {
   });
 }
 
-async function temporaryBase() {
-  const preferred = '/dev/shm/claude-session-lab';
-  try {
-    const info = await stat('/dev/shm');
-    if (!info.isDirectory()) throw new Error('not a directory');
-    await access('/dev/shm', fsConstants.W_OK);
-    await mkdir(preferred, { recursive: true, mode: 0o700 });
-    await chmod(preferred, 0o700);
-    return preferred;
-  } catch {
-    const fallback = join(tmpdir(), 'claude-session-lab');
-    await mkdir(fallback, { recursive: true, mode: 0o700 });
-    await chmod(fallback, 0o700);
-    return fallback;
-  }
-}
-
 function terminateProcessGroup(child, signal) {
-  if (!child.pid) return;
-  try {
-    process.kill(-child.pid, signal);
-  } catch {
-    try { child.kill(signal); } catch {}
-  }
+  terminateTree(child, signal);
 }
 
 function capture(stream, limit, onOverflow) {
@@ -195,13 +173,14 @@ export async function runClaudeStream({
   }
   registerExitCleanup();
 
-  const base = await temporaryBase();
+  const { base } = await sandboxBase();
   const root = await mkdtemp(join(base, 'run-'));
   activeSandboxes.add(root);
   const home = join(root, 'home');
   const config = join(root, 'config');
   const work = join(root, 'work');
   const credentialsPath = join(config, '.credentials.json');
+  const systemPromptPath = join(root, 'system-prompt.txt');
   try {
     await Promise.all([
       mkdir(home, { mode: 0o700 }),
@@ -213,7 +192,14 @@ export async function runClaudeStream({
       mode: 0o600,
       flag: 'wx',
     });
-    await chmod(credentialsPath, 0o600);
+    await chmod(credentialsPath, 0o600).catch(() => {});
+    // The prompt goes in a file rather than argv: caller-supplied text on a command line is a
+    // quoting hazard on Windows and runs into command-length limits everywhere.
+    await writeFile(systemPromptPath, systemPrompt || DEFAULT_SYSTEM_PROMPT, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    });
   } catch (error) {
     // The sandbox holds a plaintext credential, so a failed setup must not leave it behind.
     activeSandboxes.delete(root);
@@ -241,7 +227,9 @@ export async function runClaudeStream({
     env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = String(maxTokens);
   }
 
+  const { command, prefixArgs } = await resolveClaudeCommand(binary);
   const args = [
+    ...prefixArgs,
     '-p',
     '--input-format', 'stream-json',
     '--output-format', 'stream-json',
@@ -252,7 +240,7 @@ export async function runClaudeStream({
     '--strict-mcp-config',
     '--tools', '',
     '--model', model,
-    '--system-prompt', systemPrompt || DEFAULT_SYSTEM_PROMPT,
+    '--system-prompt-file', systemPromptPath,
   ];
 
   let child;
@@ -262,12 +250,13 @@ export async function runClaudeStream({
   let hardKillTimer;
   let onAbort;
   try {
-    child = spawn(binary, args, {
+    child = spawn(command, args, {
       cwd: work,
       env,
       shell: false,
       stdio: ['pipe', 'pipe', 'pipe'],
-      detached: true,
+      detached: spawnDetached(),
+      windowsHide: true,
     });
 
     const stopForOverflow = () => {

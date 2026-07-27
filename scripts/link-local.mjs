@@ -2,16 +2,12 @@
 // Links the Claude account already signed in to Claude Code on THIS machine and prints one
 // gateway key. Convenience path for a single-owner self-host; the browser PKCE flow in the
 // admin UI is the right choice when the gateway account should stay separate.
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { APP_CONFIG } from '../src/config.mjs';
 import { openKeystore, parseMasterKey } from '../src/keystore.mjs';
 import { fetchOAuthProfile } from '../src/oauth.mjs';
+import { readLocalClaudeCredentials } from '../src/platform.mjs';
 
 const label = process.argv[2] ?? 'local-claude-code';
-const credentialsPath = process.env.CLAUDE_CREDENTIALS
-  ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), '.credentials.json');
 
 function fail(message) {
   console.error(`link-local: ${message}`);
@@ -23,13 +19,16 @@ if (!APP_CONFIG.gateway.masterKey) {
 }
 
 let oauth;
+let credentialSource;
 try {
-  const raw = await readFile(credentialsPath, 'utf8');
-  oauth = JSON.parse(raw)?.claudeAiOauth;
+  // Resolves the Keychain on macOS and the credentials file elsewhere.
+  const local = await readLocalClaudeCredentials();
+  oauth = local.oauth;
+  credentialSource = local.source;
 } catch (error) {
-  fail(`could not read ${credentialsPath} (${error.code ?? 'unreadable'}). Run \`claude\` and sign in first.`);
+  fail(error.publicMessage ?? error.message);
 }
-if (!oauth?.accessToken) fail(`no claudeAiOauth.accessToken in ${credentialsPath}`);
+if (!oauth?.accessToken) fail(`no claudeAiOauth.accessToken found in ${credentialSource}`);
 if (Number.isFinite(oauth.expiresAt) && oauth.expiresAt < Date.now() && !oauth.refreshToken) {
   fail('the stored access token is expired and there is no refresh token. Run `claude` to sign in again.');
 }
@@ -70,6 +69,7 @@ const { connection, apiKey } = await keystore.createConnection({ label, tokens, 
 await keystore.close();
 
 console.log(`Linked ${connection.account.emailMasked ?? 'account'} (${connection.account.plan ?? 'plan unknown'}) as "${connection.label}".`);
+console.log(`Credentials read from: ${credentialSource}`);
 console.log(`Keystore: ${APP_CONFIG.keystoreFile}`);
 console.log('');
 console.log('Gateway key (shown once, store it now):');

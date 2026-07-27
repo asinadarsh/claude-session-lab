@@ -32,13 +32,17 @@ const line = JSON.parse(raw.trim().split('\\n').pop());
 const text = line.message.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
 const images = line.message.content.filter((b) => b.type === 'image').length;
 const flags = process.argv.slice(2).join(' ');
+const promptFileIndex = process.argv.indexOf('--system-prompt-file');
+const systemPrompt = promptFileIndex > 0
+  ? await readFile(process.argv[promptFileIndex + 1], 'utf8')
+  : null;
 const credentialPath = join(process.env.CLAUDE_CONFIG_DIR, '.credentials.json');
 const credential = JSON.parse(await readFile(credentialPath, 'utf8'));
 credential.claudeAiOauth.accessToken = 'updated-access-placeholder';
 credential.claudeAiOauth.refreshToken = 'updated-refresh-placeholder';
 await writeFile(credentialPath, JSON.stringify(credential), { mode: 0o600 });
 const reply = 'fixture:' + text + '|images=' + images;
-console.log(JSON.stringify({ type: 'system', subtype: 'init', flags, maxOut: process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ?? null }));
+console.log(JSON.stringify({ type: 'system', subtype: 'init', flags, systemPrompt, maxOut: process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ?? null }));
 console.log(JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: reply } } }));
 console.log(JSON.stringify({ type: 'assistant', message: { model: 'fixture-model', content: [{ type: 'text', text: reply }] } }));
 console.log(JSON.stringify({
@@ -97,10 +101,12 @@ test('streaming runner forwards every stdout object and applies sandbox flags', 
     assert.deepEqual(events.map((event) => event.type), ['system', 'stream_event', 'assistant', 'result']);
     const init = events[0];
     assert.equal(init.maxOut, '512');
-    for (const flag of ['--tools', '--strict-mcp-config', '--setting-sources', '--no-session-persistence', '--system-prompt', '--include-partial-messages']) {
+    for (const flag of ['--tools', '--strict-mcp-config', '--setting-sources', '--no-session-persistence', '--system-prompt-file', '--include-partial-messages']) {
       assert.ok(init.flags.includes(flag), `expected ${flag} in CLI flags`);
     }
-    assert.ok(init.flags.includes('be terse'));
+    // The prompt must travel in a file, never on the command line.
+    assert.equal(init.systemPrompt, 'be terse');
+    assert.ok(!init.flags.includes('be terse'), 'caller text must not appear in argv');
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
@@ -108,7 +114,7 @@ test('streaming runner forwards every stdout object and applies sandbox flags', 
 
 test('streaming runner rejects a multi-line CLI input line', async () => {
   await assert.rejects(
-    runClaudeStream({ tokens, cliInputLine: '{"a":1}\n{"b":2}', binary: '/bin/true' }),
+    runClaudeStream({ tokens, cliInputLine: '{"a":1}\n{"b":2}', binary: process.execPath }),
     (error) => error.code === 'CLI_INPUT_INVALID',
   );
 });

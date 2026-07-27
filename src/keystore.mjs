@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import { unlinkSync } from 'node:fs';
+import { closeSync, unlinkSync } from 'node:fs';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { PublicError, constantTimeEqual, maskEmail, randomToken } from './security.mjs';
@@ -120,7 +120,13 @@ export async function openKeystore({ file, masterKey }) {
 
   const lockFile = `${file}.lock`;
   const lockHandle = await acquireLock(lockFile);
+  // Windows refuses to unlink a file that is still open, so the descriptor is closed first.
+  // Both steps are idempotent because a stale lock is reclaimed by the pid check on open.
+  let lockReleased = false;
   const releaseLockSync = () => {
+    if (lockReleased) return;
+    lockReleased = true;
+    try { closeSync(lockHandle.fd); } catch {}
     try { unlinkSync(lockFile); } catch {}
   };
   process.once('exit', releaseLockSync);
@@ -138,12 +144,10 @@ export async function openKeystore({ file, masterKey }) {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      await lockHandle.close().catch(() => {});
       releaseLockSync();
       throw unreadableError();
     }
     if (parsed?.version !== 1 || !Array.isArray(parsed.records)) {
-      await lockHandle.close().catch(() => {});
       releaseLockSync();
       throw unreadableError();
     }
@@ -160,7 +164,6 @@ export async function openKeystore({ file, masterKey }) {
         }
       }
     } catch (error) {
-      await lockHandle.close().catch(() => {});
       releaseLockSync();
       throw error;
     }
@@ -310,7 +313,6 @@ export async function openKeystore({ file, masterKey }) {
 
     async close() {
       await writeChain.catch(() => {});
-      await lockHandle.close().catch(() => {});
       releaseLockSync();
       process.removeListener('exit', releaseLockSync);
     },

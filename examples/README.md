@@ -10,7 +10,8 @@ export CSL_URL=http://127.0.0.1:3210       # your gateway (default if unset)
 
 | File | What it shows |
 |---|---|
-| `curl.sh` | Buffered and streaming requests with no dependencies at all |
+| `curl.sh` | Buffered and streaming requests with no dependencies at all (bash: Linux, macOS, WSL) |
+| `curl.ps1` | The same two requests from PowerShell on Windows |
 | `anthropic-sdk.mjs` | Official `@anthropic-ai/sdk`, buffered + streaming |
 | `openai-sdk.mjs` | Apps already written against OpenAI |
 | `chat-loop.mjs` | Multi-turn conversation state, the way a real chat app keeps it. Interactive — piping a whole script into it only runs the first turn, because readline consumes the buffered input at once |
@@ -18,7 +19,11 @@ export CSL_URL=http://127.0.0.1:3210       # your gateway (default if unset)
 ## curl needs nothing
 
 ```bash
-bash examples/curl.sh
+bash examples/curl.sh          # Linux, macOS, WSL
+```
+
+```powershell
+.\examples\curl.ps1           # Windows PowerShell
 ```
 
 ## The SDK examples need their package installed
