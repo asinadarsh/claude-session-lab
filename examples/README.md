@@ -27,10 +27,13 @@ This project has zero runtime dependencies, so the SDKs are not vendored here. N
 imports from the **script's own directory**, not your shell's working directory, so copy the
 example next to the installed packages rather than running it in place:
 
+Run this from inside your clone, so `$REPO` picks up wherever you put it:
+
 ```bash
+REPO=$(pwd)
 mkdir -p /tmp/csl-example && cd /tmp/csl-example
 npm init -y >/dev/null && npm install @anthropic-ai/sdk openai
-cp ~/claude-session-lab/examples/*.mjs .
+cp "$REPO"/examples/*.mjs .
 
 node anthropic-sdk.mjs
 node openai-sdk.mjs

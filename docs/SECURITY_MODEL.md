@@ -34,7 +34,7 @@ The host administrator and the user controlling the browser session are trusted.
 
 ### Loopback-only network boundary
 
-`src/config.mjs` fixes the bind host to `127.0.0.1`. It is not configurable. The HTTP layer also rejects unexpected Host and Origin values. Remote use is expected to happen through an SSH tunnel that terminates on localhost.
+`src/config.mjs` defaults the bind host to `127.0.0.1`. Overriding it with `SESSION_LAB_HOST` additionally requires the explicit `SESSION_LAB_ALLOW_PUBLIC_BIND=1` opt-in, and the admin surface still refuses non-localhost `Host` headers; prefer a reverse proxy that exposes only `/v1/*`. The HTTP layer also rejects unexpected Host and Origin values. Remote use is expected to happen through an SSH tunnel that terminates on localhost.
 
 ### Browser isolation
 

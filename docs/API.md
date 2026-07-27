@@ -33,10 +33,10 @@ A subset of the [Anthropic Messages API](https://docs.anthropic.com/en/api/messa
 
 | Field | Notes |
 |---|---|
-| `model` | Required. See `GET /v1/models`. |
+| `model` | Optional; defaults to `sonnet`. Accepts the aliases `sonnet`, `opus`, `haiku`, or any `claude-*` model id. `GET /v1/models` lists what the gateway advertises, not the only accepted values. |
 | `messages` | Required. `user` and `assistant` roles; content as a string or an array of `text` and base64 `image` blocks. |
 | `system` | String system prompt. |
-| `max_tokens` | Required by the schema; clamped to the range 256–64000. |
+| `max_tokens` | Optional; clamped to the range 256–64000. Omitted, zero and negative values fall back to `SESSION_LAB_DEFAULT_MAX_TOKENS` (4096). |
 | `stream` | `true` for SSE streaming. |
 | `stop_sequences` | **Rejected** with `400 invalid_request_error`. The CLI exposes no stop-sequence control, and accepting the field would let generation run past your delimiter while still reporting `end_turn`. Trim the response on your side. |
 | `thinking` | When requested, `thinking` blocks are included in the response. |
@@ -149,6 +149,7 @@ An OpenAI-compatible subset, translated onto the same sandbox with the same limi
 | `model` | Passed through; must be a model from `GET /v1/models`. |
 | `max_tokens` / `max_completion_tokens` | Clamped 256–64000. |
 | `stop` | **Rejected** with `400 invalid_request_error` (same reason as `stop_sequences`). |
+| `image_url` | A `data:<media-type>;base64,...` URL is converted to a base64 image block. A remote `http(s)` URL is **rejected** with `400`. |
 | `stream` | SSE with OpenAI-style `chat.completion.chunk` objects, terminated by `data: [DONE]`. |
 | `temperature`, `top_p`, `presence_penalty`, `frequency_penalty`, `logit_bias`, `seed`, `response_format` | **Silently ignored.** The CLI does not expose sampling controls, so rejecting these would break clients that always send them. |
 | `tools`, `tool_choice`, `functions`, `function_call` | **Rejected** with `400 invalid_request_error`. |
@@ -207,13 +208,13 @@ data: [DONE]
 
 ## GET /v1/models
 
-Returns the list of model IDs the gateway will accept, in an Anthropic-style list envelope:
+Returns the model ids the gateway advertises. The response uses the OpenAI models envelope (`object: "list"`, with `id`, `object`, `created` and `owned_by` per entry), which both SDK families accept:
 
 ```bash
 curl https://gateway.example.com/v1/models -H "x-api-key: csl_sk_..."
 ```
 
-The `id` values returned here are the only valid values for `model` on both POST endpoints.
+These are the ids the gateway advertises for clients that probe the endpoint. `model` is not restricted to them: the aliases `sonnet`, `opus` and `haiku` and any `claude-*` id are also accepted, and an unrecognised value returns `400 invalid_request_error`.
 
 ## Errors
 
@@ -224,7 +225,7 @@ Both surfaces return the Anthropic error envelope:
   "type": "error",
   "error": {
     "type": "invalid_request_error",
-    "message": "max_tokens must be a positive integer."
+    "message": "The final message must have role \"user\"."
   }
 }
 ```
@@ -234,7 +235,7 @@ Both surfaces return the Anthropic error envelope:
 | 400 | `invalid_request_error` | Malformed body, unsupported field, rejected feature (tools, URL images). |
 | 401 | `authentication_error` | Missing, malformed, or revoked API key. |
 | 403 | `permission_error` | Valid key, operation not allowed. |
-| 404 | `not_found_error` | Unknown route or model. |
+| 404 | `not_found_error` | Unknown route. An unrecognised `model` is a 400, not a 404. |
 | 413 | `request_too_large` | Body exceeds the configured size limit. |
 | 429 | `rate_limit_error` | The linked subscription hit its rate limit window. |
 | 500 | `api_error` | Unexpected gateway failure. |

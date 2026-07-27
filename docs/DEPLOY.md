@@ -35,14 +35,16 @@ sudo chmod 600 /etc/claude-session-lab/env
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `SESSION_LAB_GATEWAY` | `0` | **Must be `1`**, or the service starts fine and answers every `/v1/*` request with `503 GATEWAY_DISABLED`. |
 | `SESSION_LAB_MASTER_KEY` | (none — required for gateway mode) | Encrypts persisted OAuth tokens in `data/keystore.json`. |
-| `SESSION_LAB_PORT` | `3210` | Loopback port. The server binds `127.0.0.1` only; this cannot be changed. |
+| `SESSION_LAB_PORT` | `3210` | Listening port. `SESSION_LAB_HOST` defaults to `127.0.0.1`; binding anywhere else additionally requires `SESSION_LAB_ALLOW_PUBLIC_BIND=1` and is discouraged — use the reverse proxy in section 4 instead. |
 | `CLAUDE_BINARY` | `claude` | Claude Code executable. Set to the absolute path for the service user. |
 | `NODE_BINARY` | `node` | Node executable used by `run.sh`. Irrelevant under systemd, which calls node directly. |
 
 Example contents:
 
 ```ini
+SESSION_LAB_GATEWAY=1
 SESSION_LAB_MASTER_KEY=<output of openssl rand -base64 32>
 SESSION_LAB_PORT=3210
 CLAUDE_BINARY=/home/csl/.local/bin/claude

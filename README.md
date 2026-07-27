@@ -45,7 +45,9 @@ Two settings changed. Everything else in your app stays the same. The official A
 
 ## Quickstart
 
-Five minutes, five steps. Developed and tested on Linux; macOS should work too (the sandbox falls back from `/dev/shm` to `TMPDIR`).
+Five minutes, five steps. Developed and tested on Linux and WSL.
+
+On macOS the server itself runs fine (the sandbox falls back from `/dev/shm` to `TMPDIR`), but step 3 below does not: Claude Code stores its credentials in the login Keychain there, not in `~/.claude/.credentials.json`. Skip to [the browser sign-in flow](#managing-keys) instead, or point `CLAUDE_CREDENTIALS` at a file holding the same JSON.
 
 **You need:** Node.js 24+, the `claude` CLI installed and signed in (`claude` then `/login`), and a Claude subscription you own.
 
@@ -58,6 +60,9 @@ npm test
 # 2. Turn on gateway mode with a master key (this encrypts your stored token)
 export SESSION_LAB_GATEWAY=1
 export SESSION_LAB_MASTER_KEY="$(openssl rand -base64 32)"
+
+# Save this value now — it is the one secret with no recovery path
+echo "$SESSION_LAB_MASTER_KEY"
 
 # 3. Link the account this machine is already signed in to, and get your key
 npm run link-local -- my-app
@@ -92,25 +97,34 @@ curl http://127.0.0.1:3210/v1/messages \
 That's it. Point your app at `http://127.0.0.1:3210` with that key.
 
 > [!TIP]
-> Save the master key somewhere safe. It encrypts the stored token, and there is no recovery if you lose it — you would just re-link. Note that `export` only lasts for that terminal: put the master key and `SESSION_LAB_GATEWAY=1` in your shell profile, or in the service file below, or the next `npm start` comes up with the gateway disabled.
+> **Put the master key in your password manager before you go further** (`echo "$SESSION_LAB_MASTER_KEY"` prints it again). It encrypts the stored token: lose it and the server refuses to start against the existing keystore with `KEYSTORE_UNREADABLE`, and you have to delete `data/keystore.json`, re-link, and re-key every app.
+>
+> `export` also only lasts for that one terminal. Put the master key and `SESSION_LAB_GATEWAY=1` in your shell profile or in the service file below, or your next `npm start` comes up with the gateway disabled.
 
 ## Keep it running
 
 `npm start` dies when you close the terminal. For everyday personal use, a user-level systemd
-service is the least fuss — no root, and it comes back after a crash or reboot:
+service is the least fuss — no root, and it comes back after a crash or reboot.
+
+**Stop the foreground `npm start` first** (Ctrl-C). Only one process can hold the keystore and the
+port, so the service will not start while it is running.
+
+The unit needs an absolute path to Node, because the systemd user manager does not inherit your
+shell's `PATH` — an nvm, fnm, volta or asdf install is invisible to it. This generates the unit
+with the right path filled in:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/claude-session-lab.service <<'EOF'
+cat > ~/.config/systemd/user/claude-session-lab.service <<EOF
 [Unit]
 Description=Claude Session Lab gateway
 
 [Service]
-WorkingDirectory=%h/claude-session-lab
+WorkingDirectory=$(pwd)
 Environment=SESSION_LAB_GATEWAY=1
-Environment=SESSION_LAB_MASTER_KEY=paste-your-master-key-here
-Environment=CLAUDE_BINARY=%h/.local/bin/claude
-ExecStart=/usr/bin/env node src/server.mjs
+Environment=SESSION_LAB_MASTER_KEY=$SESSION_LAB_MASTER_KEY
+Environment=CLAUDE_BINARY=$(command -v claude)
+ExecStart=$(command -v node) src/server.mjs
 Restart=on-failure
 
 [Install]
@@ -125,6 +139,10 @@ loginctl enable-linger "$USER"        # keep it running after you log out
 systemctl --user status claude-session-lab
 journalctl --user -u claude-session-lab -f
 ```
+
+Run that from inside the clone, in the same terminal where the master key is still exported, so
+the paths and the key are substituted for you. Check the result with
+`cat ~/.config/systemd/user/claude-session-lab.service` before enabling it.
 
 Only one process may hold the keystore at a time, so stop the service before running
 `link-local` again — or just use the browser UI, which works while it runs.
@@ -166,6 +184,7 @@ await stream.finalMessage();
 <summary><b>Python — Anthropic SDK</b></summary>
 
 ```python
+import os
 from anthropic import Anthropic
 
 client = Anthropic(api_key=os.environ["CSL_KEY"], base_url="http://127.0.0.1:3210")
@@ -200,6 +219,7 @@ console.log(completion.choices[0].message.content);
 ```
 
 ```python
+import os
 from openai import OpenAI
 
 client = OpenAI(api_key=os.environ["CSL_KEY"], base_url="http://127.0.0.1:3210/v1")
@@ -249,6 +269,8 @@ const message = await anthropic.messages.create({
 ```
 </details>
 
+Runnable versions of all of these live in **[examples/](examples/)** — curl, both SDKs, and a multi-turn chat loop.
+
 Endpoints: `POST /v1/messages`, `POST /v1/chat/completions`, `GET /v1/models`. Full request and response contract in **[docs/API.md](docs/API.md)**.
 
 ## What works, and what doesn't
@@ -256,7 +278,7 @@ Endpoints: `POST /v1/messages`, `POST /v1/chat/completions`, `GET /v1/models`. F
 | Works | Notes |
 |---|---|
 | Multi-turn conversations | Full history, flattened into one prompt |
-| Streaming (SSE) | Both endpoints; real Anthropic event sequence |
+| Streaming (SSE) | `/v1/messages` forwards real Anthropic events as they arrive. `/v1/chat/completions` is protocol-compatible but emits its chunks once the turn finishes, so it is not incremental |
 | Images | Base64 blocks, up to 6 per request by default |
 | System prompts | String or block array |
 | Model selection | `sonnet`, `opus`, `haiku`, or any `claude-*` id |
@@ -267,7 +289,7 @@ Endpoints: `POST /v1/messages`, `POST /v1/chat/completions`, `GET /v1/models`. F
 |---|---|
 | Tool use / function calling | The sandbox runs with tools disabled. Sending `tools` returns `400` rather than silently ignoring them and leaving your app waiting for a `tool_use` block. |
 | `stop_sequences` / OpenAI `stop` | The CLI exposes no stop-sequence control, so this returns `400`. Trim the response on your side. |
-| Image URL sources | Returns `400`. Send base64. |
+| Remote image URLs | Returns `400`. Fetch the bytes yourself and send base64. On the OpenAI surface a `data:` URL in `image_url` is accepted and converted for you |
 | `temperature`, `top_p`, `seed`, … | Silently ignored — the CLI has no sampling controls. |
 | Parallel requests per account | Serialized. Two concurrent runs would both rotate the OAuth token and invalidate each other. |
 
@@ -345,7 +367,7 @@ export SESSION_LAB_CORS_ORIGINS="https://myapp.com"
 | `401 API_KEY_INVALID` | Wrong or revoked key. Keys are shown once; issue a new one. |
 | `401 CLAUDE_AUTH_REQUIRED` | The linked account's tokens no longer work. Re-link it. |
 | `429 CLAUDE_RATE_LIMITED` | Your subscription hit its five-hour window. Wait it out. |
-| `429 CONCURRENCY_LIMIT` | Too many requests queued for one account; they run one at a time. |
+| `429 CONCURRENCY_LIMIT` | Too many requests queued for that key; inference runs one at a time per account. |
 | `421 HOST_NOT_ALLOWED` | You reached `/api/*` without localhost. Use the SSH tunnel. |
 | `500 CLAUDE_BINARY_MISSING` | Set `CLAUDE_BINARY` to an absolute path, e.g. `$HOME/.local/bin/claude`. |
 | Server exits at startup, mentions the bind address | Binding off-localhost also needs `SESSION_LAB_ALLOW_PUBLIC_BIND=1`. Prefer a reverse proxy. |
@@ -358,7 +380,7 @@ Logs are one JSON line per request (method, path, status, duration, request id) 
 flowchart LR
     APP[Your app] -->|x-api-key| S[Node HTTP server]
     S -->|verify SHA-256 hash| K[(Encrypted keystore)]
-    S -->|mode 600, request lifetime only| M[/tmpfs sandbox/]
+    S -->|mode 700, request lifetime only| M[/tmpfs sandbox/]
     M --> C[Isolated claude CLI, tools disabled]
     C -->|stream-json| S
     S -->|Anthropic or OpenAI response| APP
@@ -399,13 +421,13 @@ Everything is an environment variable; the app deliberately does not read `.env`
 | `SESSION_LAB_HOST` | `127.0.0.1` | Bind address; off-localhost also needs `SESSION_LAB_ALLOW_PUBLIC_BIND=1` |
 | `SESSION_LAB_CORS_ORIGINS` | none | Comma-separated origins allowed to call `/v1/*` from a browser |
 | `SESSION_LAB_RATE_LIMIT_PER_MINUTE` | `60` | Requests per minute per key |
-| `SESSION_LAB_QUEUE_LIMIT` | `4` | Requests that may wait for one account's lock |
+| `SESSION_LAB_QUEUE_LIMIT` | `4` | Requests that may queue per key. The inference lock itself is per account, so keys sharing an account each queue up to this many |
 | `SESSION_LAB_MAX_BODY_KB` | `8192` | Request-body ceiling, sized for base64 images |
 | `SESSION_LAB_MAX_IMAGES` | `6` | Image blocks per request |
 | `SESSION_LAB_REQUEST_TIMEOUT_S` | `600` | Inference deadline |
 | `SESSION_LAB_DEFAULT_MAX_TOKENS` | `4096` | Used when a request omits `max_tokens` |
 
-The remaining limits (`MAX_PROMPT_CHARS`, `MAX_MESSAGES`, `MAX_IMAGE_KB`, `MAX_CONNECTIONS`) are listed in [docs/DEPLOY.md](docs/DEPLOY.md).
+The remaining limits (`SESSION_LAB_MAX_PROMPT_CHARS`, `SESSION_LAB_MAX_MESSAGES`, `SESSION_LAB_MAX_IMAGE_KB`, `SESSION_LAB_MAX_CONNECTIONS`) are listed with their defaults in [`.env.example`](.env.example). `CLAUDE_CREDENTIALS` overrides where `link-local` reads Claude Code's credential file.
 
 ## Lab mode
 
@@ -432,7 +454,10 @@ src/openai.mjs           OpenAI compatibility shim
 src/claude.mjs           Sandboxed claude CLI runner
 src/oauth.mjs            PKCE URL, exchange, profile, revoke
 src/security.mjs         State, cookies, masking, redaction
+src/config.mjs           Environment parsing, limits, startup validation
 scripts/link-local.mjs   Link the account this machine already uses
+examples/                Runnable curl and SDK examples
+test/                    Node test suite
 docs/                    API, deployment, protocol, threat model
 ```
 
